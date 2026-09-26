@@ -113,3 +113,7 @@ This runs the tests with macOS's JavaScriptCore via `osascript` (no Node
 needed). Fixtures are real playlists with URLs, session IDs and ad-tracking
 fields redacted. `synthetic-ad-media.m3u8` is hand-written and kept only as a
 marker-coverage test.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

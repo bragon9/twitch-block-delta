@@ -2,3 +2,4 @@
 twitch-block-delta-*.json
 .DS_Store
 test/.delta-crosscheck.json
+__pycache__/
