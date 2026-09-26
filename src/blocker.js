@@ -59,6 +59,8 @@ async function fetchBackupPlaylist(variant, usherParams) {
 //   pass            untouched
 //   strip-markers   client ad markers removed, nothing else changed
 //   splice          ad segments replaced with backup live segments
+//   drop-ad         ad dropped and the backup had nothing to add: at a break's edges
+//                   the ad is only past the live edge, or already over
 //   renumber        no ad right now; renumbered to stay continuous after an earlier splice
 //   strip-ad        ad dropped but no backup available; the player waits at the live edge
 //   fallback-native nothing live to serve (e.g. pre-roll with no backup); the ad plays
@@ -102,6 +104,10 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
   };
   if (text === null) return { ...base, text: nativeText, action: "fallback-native" };
   if (stats.backupAdSegments > 0) base.error ??= `backup also had ${stats.backupAdSegments} ad segments`;
-  const action = stats.fromBackup > 0 ? "splice" : analysis.adKind === "stitched" ? "strip-ad" : "renumber";
+  // The output always ends at the newest live segment either playlist has, so with
+  // a backup in hand nothing live is missing even when it supplied no segments.
+  let action = "renumber";
+  if (stats.fromBackup > 0) action = "splice";
+  else if (analysis.adKind === "stitched") action = backup ? "drop-ad" : "strip-ad";
   return { ...base, text, action };
 }
