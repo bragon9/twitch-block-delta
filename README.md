@@ -47,6 +47,25 @@ Temporary add-ons are removed when the browser quits. Export before restarting.
 - **Observe only**: passes everything through unchanged and probes other player
   types during ads. Use it to capture raw ad data.
 
+## Logging
+
+Set in the popup:
+
+- **Problems only** (default): the last ~2 minutes of captures are kept in
+  memory only. If something goes wrong, they are saved with the ~15s after it to
+  `Downloads/twitch-block-delta/problem-<time>.json`, with no prompt. Problems
+  are: a rewrite that threw or returned an error (backup fetch failed, backup
+  also had ads), an ad the player was left to see, a rewrite that left nothing
+  live to play, a rewrite slower than 2s, and a non-playlist response. Files are
+  limited to one per minute and 25 per browser session. **Save recent** writes
+  the buffer on demand. These files hold full playlist text, so they need no
+  expanding.
+- **Always**: every capture is stored in extension storage (see below) and
+  exported by hand.
+- **Off**: nothing is recorded and the `[delta]` console lines stop.
+
+The setting only affects recording; blocking is the same in every setting.
+
 ## What to collect
 
 Export from the popup (**Export captures**) after any of these, and note the
@@ -94,3 +113,7 @@ This runs the tests with macOS's JavaScriptCore via `osascript` (no Node
 needed). Fixtures are real playlists with URLs, session IDs and ad-tracking
 fields redacted. `synthetic-ad-media.m3u8` is hand-written and kept only as a
 marker-coverage test.
+
+## License
+
+GPL-3.0-or-later. See [LICENSE](LICENSE).

@@ -5,8 +5,11 @@
   "description": "Firefox-only Twitch ad blocker that splices ad-free live segments into the stream. Records playlists for debugging.",
   "browser_specific_settings": {
     "gecko": {
-      "id": "twitch-block-delta@local",
-      "strict_min_version": "128.0"
+      "id": "twitch-block-delta@bdudders",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   },
   "permissions": [
@@ -26,6 +29,7 @@
       "src/splice.js",
       "src/delta.js",
       "src/capture.js",
+      "src/ring.js",
       "src/probe.js",
       "src/blocker.js",
       "src/background.js"

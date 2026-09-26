@@ -13,11 +13,21 @@
       <button id="mode-block" class="secondary" role="radio">Block</button>
       <button id="mode-observe" class="secondary" role="radio">Observe only</button>
     </div>
+    <label class="toggle">
+      Logging
+      <select id="log-mode">
+        <option value="problems">Problems only</option>
+        <option value="always">Always</option>
+        <option value="off">Off</option>
+      </select>
+    </label>
+    <p id="log-note" class="muted"></p>
     <p id="summary" class="muted">Loading…</p>
     <div id="tabs"></div>
     <footer>
       <button id="export">Export captures</button>
       <button id="clear" class="secondary">Clear</button>
+      <button id="dump" class="secondary">Save recent</button>
     </footer>
     <script src="popup.js"></script>
   </body>

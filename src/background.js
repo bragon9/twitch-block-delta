@@ -2,9 +2,14 @@
 // Intercepts Twitch's master (usher) and media playlist responses with
 // filterResponseData. In "block" mode media playlists are rewritten by blocker.js;
 // in "observe" mode every byte passes through unchanged and ad breaks are probed.
-// Both modes record the playlists Twitch actually sent.
+// What gets recorded depends on the log mode below.
 
-const log = (...args) => console.log("[delta]", ...args);
+// "problems" (default): keep the last couple of minutes in memory and write a file
+// only when something goes wrong. "always": persist every capture to storage.
+// "off": record nothing.
+const LOG_MODES = ["problems", "always", "off"];
+let logMode = "problems";
+const log = (...args) => logMode !== "off" && console.log("[delta]", ...args);
 
 const USHER_URLS = ["*://usher.ttvnw.net/api/*"];
 const MEDIA_URLS = [
@@ -81,6 +86,72 @@ function getTab(tabId) {
   return tabs.get(tabId);
 }
 
+const POST_PROBLEM_MS = 15_000;
+const DUMP_COOLDOWN_MS = 60_000;
+const MAX_DUMPS_PER_RUN = 25;
+const SLOW_REWRITE_MS = 2_000;
+// { reasons, timer } while a dump is waiting for the seconds after a problem.
+let pendingDump = null;
+let lastDumpAt = 0;
+let dumpCount = 0;
+let lastDump = null;
+
+async function record(entry) {
+  if (logMode === "always") return Capture.add(entry);
+  if (logMode === "problems") Ring.add(entry);
+}
+
+// Something went wrong. Note it, then write the ring to a file once the seconds
+// after the problem are in it too. Rate-limited so a broken stream can't flood
+// the Downloads folder.
+function anomaly(reason, detail = {}) {
+  if (logMode === "off") return;
+  log(`problem: ${reason}`, detail.error ?? "");
+  record({ kind: "anomaly", reason, ...detail }).catch((err) => console.error("[delta]", err));
+  if (logMode !== "problems") return;
+  if (pendingDump) {
+    if (!pendingDump.reasons.includes(reason)) pendingDump.reasons.push(reason);
+    return;
+  }
+  if (Date.now() - lastDumpAt < DUMP_COOLDOWN_MS || dumpCount >= MAX_DUMPS_PER_RUN) return;
+  pendingDump = { reasons: [reason], timer: setTimeout(flushDump, POST_PROBLEM_MS) };
+}
+
+async function flushDump() {
+  const { reasons } = pendingDump;
+  pendingDump = null;
+  lastDumpAt = Date.now();
+  dumpCount++;
+  try {
+    lastDump = { at: Date.now(), reasons, entries: await writeDump(reasons) };
+  } catch (err) {
+    lastDump = { at: Date.now(), reasons, error: String(err?.message || err) };
+    console.error("[delta] problem dump failed", err);
+  }
+}
+
+async function writeDump(reasons) {
+  const entries = Ring.snapshot();
+  const since = entries.length > 0 ? Date.parse(entries[0].at) : Date.now();
+  const requests = [...requestLog, ...pendingRequests.values()].filter((r) => r.at >= since);
+  await saveJson(
+    { exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, encoding: EXPORT_ENCODING, reasons, requests, entries },
+    `twitch-block-delta/problem-${fileStamp()}.json`,
+    false,
+  );
+  return entries.length;
+}
+
+function setLogMode(next) {
+  if (!LOG_MODES.includes(next)) return;
+  logMode = next;
+  if (logMode !== "problems") {
+    clearTimeout(pendingDump?.timer);
+    pendingDump = null;
+    Ring.clear();
+  }
+}
+
 function isOwnRequest(details) {
   return (details.originUrl || "").startsWith("moz-extension:");
 }
@@ -125,6 +196,7 @@ function rewriteBody(requestId, record, transform) {
       if (typeof rewritten === "string" && rewritten !== text) output = new TextEncoder().encode(rewritten);
     } catch (err) {
       console.error("[delta] rewrite failed; sending original", err);
+      anomaly("rewrite-exception", { error: String(err?.message || err) });
     }
     filter.write(output);
     filter.close();
@@ -202,7 +274,7 @@ async function onMaster(details, text) {
   }
 
   log(`master ${channel} (${playerType}${isSecondary ? ", secondary" : ""}) tab=${details.tabId}:`, master.variants.map((v) => v.name).join(", "));
-  await Capture.add({
+  await record({
     kind: "master",
     tabId: details.tabId,
     channel,
@@ -244,7 +316,9 @@ async function onMedia(details, text, record) {
 async function observeMedia(details, text, variant, outcome) {
   const tab = getTab(details.tabId);
   if (!text.startsWith("#EXTM3U")) {
-    await Capture.add({ kind: "invalid-response", tabId: details.tabId, channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length, head: text.slice(0, 200) });
+    await record({ kind: "invalid-response", tabId: details.tabId, channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length, head: text.slice(0, 200) });
+    // Empty bodies are aborted requests, not a problem.
+    if (text.length > 0) anomaly("invalid-response", { channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length });
     return;
   }
   // Secondary players and previews share the tab. Only playlists from the main
@@ -269,10 +343,10 @@ async function observeMedia(details, text, variant, outcome) {
     pageStream: isPageStream,
   };
   if (analysis.isAd && previous && !previous.isAd) {
-    await Capture.add({ kind: "media", reason: "pre-ad", ...base, analysis: analyzeMedia(previous.text), chain: `native:${details.url}`, text: previous.text });
+    await record({ kind: "media", reason: "pre-ad", ...base, analysis: analyzeMedia(previous.text), chain: `native:${details.url}`, text: previous.text });
   }
   const reason = !previous ? "first" : previous.signature !== signature ? "markup-changed" : analysis.isAd ? "ad" : null;
-  if (reason) await Capture.add({ kind: "media", reason, ...base, analysis, chain: `native:${details.url}`, text });
+  if (reason) await record({ kind: "media", reason, ...base, analysis, chain: `native:${details.url}`, text });
 
   if (outcome && outcome.action !== "pass") {
     if (isPageStream) {
@@ -284,7 +358,7 @@ async function observeMedia(details, text, variant, outcome) {
     // Keep every rewrite made during an ad, plus the first of each other kind per stream.
     const previousAction = previous?.action ?? null;
     if (analysis.isAd || outcome.action !== previousAction) {
-      await Capture.add({
+      await record({
         kind: "rewrite",
         ...base,
         action: outcome.action,
@@ -298,7 +372,7 @@ async function observeMedia(details, text, variant, outcome) {
       });
       // The backup playlist this rewrite used, so any splice can be replayed exactly.
       if (outcome.backupText) {
-        await Capture.add({
+        await record({
           kind: "backup",
           ...base,
           backupVariant: outcome.backupVariant,
@@ -309,6 +383,14 @@ async function observeMedia(details, text, variant, outcome) {
       }
     }
     if (outcome.error) log(`${outcome.action} ${base.channel} ${base.variant}: ${outcome.error}`);
+    if (isPageStream) {
+      const detail = { channel: base.channel, variant: base.variant, action: outcome.action, error: outcome.error ?? null, rewriteMs: outcome.rewriteMs };
+      if (outcome.error) anomaly("rewrite-error", detail);
+      // The player got the ad, or nothing live to play.
+      if (outcome.action === "fallback-native") anomaly("ad-not-blocked", detail);
+      if (outcome.action === "strip-ad") anomaly("no-live-segments", detail);
+      if (outcome.rewriteMs > SLOW_REWRITE_MS) anomaly("slow-rewrite", detail);
+    }
   }
   streams.get(details.url).action = outcome?.action ?? null;
 
@@ -342,7 +424,7 @@ async function updateAdState(tab, analysis, outcome) {
     if (!escalated) tab.adBreaks++;
     tab.lastAdReasons = analysis.adReasons;
     log(`ad start (${analysis.adKind}) ${tab.channel} tab=${tab.tabId}:`, analysis.adReasons.join("; "));
-    await Capture.add({
+    await record({
       kind: "event",
       event: "ad-start",
       adKind: analysis.adKind,
@@ -365,7 +447,7 @@ async function updateAdState(tab, analysis, outcome) {
     tab.adKind = null;
     setBadge(tab.tabId, "");
     log(`ad end ${tab.channel} tab=${tab.tabId} after ${Math.round(durationMs / 1000)}s`);
-    await Capture.add({ kind: "event", event: "ad-end", adKind: endedKind, tabId: tab.tabId, channel: tab.channel, durationMs, tabInfo });
+    await record({ kind: "event", event: "ad-end", adKind: endedKind, tabId: tab.tabId, channel: tab.channel, durationMs, tabInfo });
   }
 }
 
@@ -425,6 +507,19 @@ browser.webRequest.onErrorOccurred.addListener(
 
 browser.tabs.onRemoved.addListener((tabId) => tabs.delete(tabId));
 
+function fileStamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+async function saveJson(payload, filename, saveAs) {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(payload)], { type: "application/json" }));
+  try {
+    await browser.downloads.download({ url, filename, saveAs, conflictAction: "uniquify" });
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+}
+
 async function exportCaptures() {
   const entries = await Capture.all();
   const requests = [...requestLog, ...pendingRequests.values()];
@@ -436,16 +531,7 @@ async function exportCaptures() {
     requests,
     entries,
   };
-  const blob = new Blob([JSON.stringify(payload)], {
-    type: "application/json",
-  });
-  const url = URL.createObjectURL(blob);
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  try {
-    await browser.downloads.download({ url, filename: `twitch-block-delta-${stamp}.json`, saveAs: true });
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
-  }
+  await saveJson(payload, `twitch-block-delta-${fileStamp()}.json`, true);
   return entries.length;
 }
 
@@ -454,6 +540,9 @@ browser.runtime.onMessage.addListener(async (message) => {
     case "state":
       return {
         mode,
+        logMode,
+        ring: { count: Ring.items.length, bytes: Ring.bytes },
+        lastDump,
         captures: await Capture.count(),
         storage: await Capture.stats(),
         tabs: [...tabs.values()].map(({ usherParams, ...rest }) => rest),
@@ -469,10 +558,19 @@ browser.runtime.onMessage.addListener(async (message) => {
       await browser.storage.local.set({ mode });
       log(`mode: ${mode}`);
       return { mode };
+    case "setLogMode":
+      setLogMode(message.logMode);
+      await browser.storage.local.set({ logMode });
+      log(`log mode: ${logMode}`);
+      return { logMode };
+    case "dumpNow":
+      if (logMode !== "problems") return { entries: 0 };
+      return { entries: await writeDump(["manual"]) };
   }
 });
 
-Promise.all([Capture.load(), browser.storage.local.get("mode")]).then(([, stored]) => {
+Promise.all([Capture.load(), browser.storage.local.get(["mode", "logMode"])]).then(([, stored]) => {
+  setLogMode(stored.logMode);
   if (stored.mode === "observe" || stored.mode === "block") mode = stored.mode;
   log(`ready (${mode} mode)`);
 });
