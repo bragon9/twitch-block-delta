@@ -96,6 +96,8 @@ async function refresh() {
   renderMode(state.mode);
   if (logModeEl.value !== state.logMode) logModeEl.value = state.logMode;
   logNoteEl.textContent = logNote(state);
+  // The in-memory buffer only fills in "problems" mode.
+  document.getElementById("dump").hidden = state.logMode !== "problems";
   const mb = (n) => (n / 1024 / 1024).toFixed(1);
   summaryEl.textContent = `${state.captures} captures · ${mb(state.storage.bytes)} of ${mb(state.storage.maxBytes)} MB · ${state.tabs.length} tab(s)`;
   tabsEl.replaceChildren(...state.tabs.map(renderTab));

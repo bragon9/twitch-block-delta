@@ -564,6 +564,7 @@ browser.runtime.onMessage.addListener(async (message) => {
       log(`log mode: ${logMode}`);
       return { logMode };
     case "dumpNow":
+      if (logMode !== "problems") return { entries: 0 };
       return { entries: await writeDump(["manual"]) };
   }
 });
