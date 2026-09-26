@@ -401,7 +401,7 @@ async function observeMedia(details, text, variant, outcome) {
 // is waiting on it.
 function badgeFor(analysis, outcome) {
   if (!outcome) return { text: BADGE_BY_AD_KIND[analysis.adKind], color: BADGE_RED };
-  const clean = outcome.action === "splice" || outcome.action === "strip-markers";
+  const clean = ["splice", "drop-ad", "strip-markers"].includes(outcome.action);
   return { text: BADGE_BY_AD_KIND[analysis.adKind], color: clean && !outcome.error ? BADGE_GREEN : BADGE_RED };
 }
 
