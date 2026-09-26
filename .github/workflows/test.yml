@@ -10,9 +10,9 @@ jobs:
     # test/run.sh uses macOS's JavaScriptCore via osascript.
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: test/run.sh
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       - run: npx --yes web-ext@8 lint --self-hosted --ignore-files "test/**" "tools/**"

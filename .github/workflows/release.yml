@@ -1,53 +1,92 @@
 name: Release
 
-# Push a tag matching manifest.json's version, e.g. `git tag v0.4.1 && git push origin v0.4.1`.
-# Needs repository secrets AMO_API_KEY and AMO_API_SECRET
+# Runs on every push to main, but only releases when manifest.json has a version
+# that has no GitHub Release yet. To release: bump "version" in a PR and merge it.
+#
+# Signs the add-on as unlisted (self-distributed) and publishes a GitHub Release
+# with the signed .xpi and updates.json. Installed copies find new versions
+# through the manifest's update_url, which points at the latest release's
+# updates.json.
+#
+# Needs repository secrets AMO_API_KEY (JWT issuer) and AMO_API_SECRET
 # (https://addons.mozilla.org/developers/addon/api/key/).
-# The channel comes from the AMO_CHANNEL repository variable: "unlisted" (default)
-# signs and attaches the .xpi to a GitHub Release; "listed" submits to AMO for review.
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
+    # test/run.sh uses macOS's JavaScriptCore via osascript.
     runs-on: macos-latest
     permissions:
       contents: write
     env:
-      CHANNEL: ${{ vars.AMO_CHANNEL || 'unlisted' }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Check the tag matches manifest.json
+      - name: Is this version new?
+        id: version
         run: |
-          version=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "Tag $GITHUB_REF_NAME does not match manifest version $version"
-            exit 1
+          read -r id version < <(python3 -c "import json; m = json.load(open('manifest.json')); print(m['browser_specific_settings']['gecko']['id'], m['version'])")
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if gh release view "v$version" > /dev/null 2>&1; then
+            echo "v$version is already released; nothing to do."
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - run: test/run.sh
+      - if: steps.version.outputs.new == 'true'
+        run: test/run.sh
 
-      - uses: actions/setup-node@v4
+      - if: steps.version.outputs.new == 'true'
+        uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
 
       - name: Lint
-        run: npx --yes web-ext@8 lint --ignore-files "test/**" "tools/**" $([ "$CHANNEL" = unlisted ] && echo --self-hosted)
+        if: steps.version.outputs.new == 'true'
+        run: npx --yes web-ext@8 lint --self-hosted --ignore-files "test/**" "tools/**"
 
       - name: Sign
+        if: steps.version.outputs.new == 'true'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_API_SECRET }}
         run: >
           npx --yes web-ext@8 sign
-          --channel "$CHANNEL"
+          --channel unlisted
           --ignore-files "test/**" "tools/**"
           --artifacts-dir web-ext-artifacts
 
-      - name: Attach the signed .xpi to a GitHub Release
-        if: env.CHANNEL == 'unlisted'
+      - name: Write updates.json
+        if: steps.version.outputs.new == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" web-ext-artifacts/*.xpi --title "$GITHUB_REF_NAME" --generate-notes
+          ID: ${{ steps.version.outputs.id }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir dist
+          xpi="twitch-block-delta-$VERSION.xpi"
+          mv web-ext-artifacts/*.xpi "dist/$xpi"
+          hash=$(shasum -a 256 "dist/$xpi" | cut -d' ' -f1)
+          link="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$xpi"
+          python3 - "$ID" "$VERSION" "$link" "$hash" > dist/updates.json <<'PY'
+          import json, sys
+          addon_id, version, link, digest = sys.argv[1:]
+          update = {"version": version, "update_link": link, "update_hash": f"sha256:{digest}"}
+          print(json.dumps({"addons": {addon_id: {"updates": [update]}}}, indent=2))
+          PY
+          cat dist/updates.json
+
+      - name: Publish the GitHub Release
+        if: steps.version.outputs.new == 'true'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes --latest

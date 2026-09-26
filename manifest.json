@@ -1,12 +1,13 @@
 {
   "manifest_version": 2,
   "name": "Twitch Block Delta",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Firefox-only Twitch ad blocker that splices ad-free live segments into the stream. Records playlists for debugging.",
   "browser_specific_settings": {
     "gecko": {
       "id": "twitch-block-delta@bdudders",
       "strict_min_version": "128.0",
+      "update_url": "https://github.com/bragon9/twitch-block-delta/releases/latest/download/updates.json",
       "data_collection_permissions": {
         "required": ["none"]
       }
