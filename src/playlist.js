@@ -112,6 +112,9 @@ function analyzeMedia(text) {
   const reasons = new Set();
   const adDateRanges = new Map();
   let stitched = false;
+  // A discontinuity after the last segment announces a switch (at an ad break,
+  // to the ad) whose segments are only in the prefetch hints so far.
+  let discontinuityAfterLastSegment = false;
 
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -136,6 +139,7 @@ function analyzeMedia(text) {
         break;
       case "#EXT-X-DISCONTINUITY":
         result.discontinuities++;
+        discontinuityAfterLastSegment = true;
         break;
       case "#EXT-X-TWITCH-PREFETCH":
         result.prefetch++;
@@ -145,6 +149,7 @@ function analyzeMedia(text) {
         break;
       case "#EXTINF": {
         result.segments++;
+        discontinuityAfterLastSegment = false;
         const title = value.slice(value.indexOf(",") + 1);
         result.titles[title] = (result.titles[title] || 0) + 1;
         if (title !== LIVE_SEGMENT_TITLE) {
@@ -184,6 +189,10 @@ function analyzeMedia(text) {
     }
   }
   if (adAttributes.size > 0) reasons.add("ad attributes on a daterange");
+  if (discontinuityAfterLastSegment) {
+    reasons.add("discontinuity after the last segment");
+    stitched = true;
+  }
 
   result.mapCount = maps.size;
   result.streamSources = [...sources];

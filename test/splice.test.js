@@ -88,6 +88,38 @@ test("after an ad, untagged page segments keep live numbering via the remembered
   eq(stats.window, [3496, 3497], "window");
 });
 
+test("prefetch hints that point past an ad boundary are dropped", () => {
+  // Real playlist from the moment an ad began: the last live segment is followed
+  // by ad markers, a discontinuity, the ad's init segment, and prefetch hints for
+  // the ad's segments. Forwarding those hints made the player append H.264 ad
+  // segments to an HEVC stream (Twitch error #3000).
+  const text = fixture("ad-starting-native");
+  eq(lib.parseMediaPlaylist(text).prefetchSafe, false, "prefetch unsafe");
+  const { text: out, stats } = lib.spliceMediaPlaylist(text, null, lib.newSpliceMemory());
+  assertCleanContinuous(out);
+  eq(out.includes("#EXT-X-TWITCH-PREFETCH"), false, "no prefetch in output");
+  eq(stats.prefetch, "dropped", "stats");
+});
+
+test("a bare discontinuity before prefetch hints counts as an ad starting", () => {
+  // Same boundary with the ad markers removed: only the discontinuity, a new init
+  // segment, and prefetch hints remain. It must still take the safe path.
+  const bare = fixture("ad-starting-native")
+    .split("\n")
+    .filter((line) => !line.startsWith("#EXT-X-DATERANGE") || line.includes("CLASS=\"twitch-session\""))
+    .join("\n");
+  const analysis = lib.analyzeMedia(bare);
+  eq(analysis.adKind, "stitched", "kind");
+  eq(analysis.adReasons, ["discontinuity after the last segment"], "reasons");
+});
+
+test("prefetch hints on a clean live playlist are kept", () => {
+  const post = lib.parseMediaPlaylist(fixture("post-ad-native"));
+  eq(post.prefetchSafe, true, "post-ad live tail is safe");
+  const backup = lib.parseMediaPlaylist(fixture("mid-ad-backup"));
+  eq(backup.prefetchSafe, true, "clean backup is safe");
+});
+
 test("no backup and no live segments yields nothing to splice", () => {
   const { text } = lib.spliceMediaPlaylist(fixture("mid-ad-native"), null, lib.newSpliceMemory());
   eq(text, null, "text");

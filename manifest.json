@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Twitch Block Delta",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Firefox-only Twitch ad blocker that splices ad-free live segments into the stream. Records playlists for debugging.",
   "browser_specific_settings": {
     "gecko": {

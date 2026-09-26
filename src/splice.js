@@ -49,6 +49,10 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
   let pending = { pdt: null, extinf: null, discontinuity: false };
   let seenSegment = false;
   let seenAd = false;
+  // Anything between the last segment and the prefetch hints (a discontinuity,
+  // a new init segment, an ad marker) means the hints point at what comes next,
+  // which at an ad boundary is the ad itself.
+  let changedAfterLastSegment = false;
 
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -79,6 +83,7 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
       });
       pending = { pdt: null, extinf: null, discontinuity: false };
       seenSegment = true;
+      changedAfterLastSegment = false;
       continue;
     }
     const [tag, value] = splitTag(line);
@@ -94,9 +99,11 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
         break;
       case "#EXT-X-MAP":
         map = parseAttributes(value).URI;
+        changedAfterLastSegment = true;
         break;
       case "#EXT-X-DISCONTINUITY":
         pending.discontinuity = true;
+        changedAfterLastSegment = true;
         break;
       case "#EXT-X-PROGRAM-DATE-TIME":
         pending.pdt = value;
@@ -109,12 +116,14 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
         break;
       case "#EXT-X-DATERANGE":
         dateRanges.push(line);
+        if (isAdDateRange(line)) changedAfterLastSegment = true;
         break;
       default:
         if (!seenSegment && !REGENERATED_HEADER_TAGS.has(tag)) header.push(line);
     }
   }
-  return { header, dateRanges, segments, prefetch, mediaSequence, targetDuration };
+  const prefetchSafe = seenSegment && !changedAfterLastSegment;
+  return { header, dateRanges, segments, prefetch, prefetchSafe, mediaSequence, targetDuration };
 }
 
 // Fills in live sequence numbers for page-playlist segments that have no tag,
@@ -200,10 +209,12 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
   }
 
   // Prefetch hints describe the segments after a playlist's newest one, so they
-  // are only valid if that playlist supplied our newest segment.
+  // are only valid if that playlist supplied our newest segment and nothing
+  // (like the start of an ad) sits between that segment and the hints.
   const tail = bySeq.get(window.at(-1));
   const tailSource = tail.source === "native" ? native : backup;
-  if (tailSource.segments.at(-1) === tail.seg) {
+  stats.prefetch = tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe ? tail.source : "dropped";
+  if (stats.prefetch !== "dropped") {
     for (const url of tailSource.prefetch) out.push(`#EXT-X-TWITCH-PREFETCH:${url}`);
   }
 
