@@ -64,6 +64,9 @@ async function fetchBackupPlaylist(variant, usherParams) {
 //   fallback-native nothing live to serve (e.g. pre-roll with no backup); the ad plays
 async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
   const analysis = analyzeMedia(nativeText);
+  // Empty or non-playlist bodies (aborted requests, errors) pass through and
+  // must not change any state.
+  if (!analysis.valid) return { text: nativeText, action: "pass-invalid", analysis };
   let memory = splicedStreams.get(url);
   const sessionSpliced = variant ? splicedSessions.has(variant.session) : false;
   if (!memory && !sessionSpliced && analysis.adKind !== "stitched") {

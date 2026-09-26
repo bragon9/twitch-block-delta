@@ -32,7 +32,9 @@ segments from two sessions).
 
 1. Disable other Twitch ad blockers (TTV AB, TTV LOL PRO).
 2. Open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
-   pick `manifest.json`. After code changes, click **Reload** on its card.
+   pick `manifest.json`. After code changes, click **Reload** on its card,
+   then **refresh any open Twitch tabs**. The extension only knows a stream
+   from its master playlist, which a running player has already fetched.
 3. The popup header shows the version. Check it after reloading.
 4. **Inspect** on the card opens the console; lines are prefixed `[delta]`.
 
@@ -57,6 +59,11 @@ time, the channel and what you saw:
 - A red **AD** badge.
 - A stream left in a **background tab** through an ad: did it keep playing
   when you came back?
+
+Every export also includes a timing log of each media playlist request (start,
+first byte, body done, forwarded to the player, status, abort/errors, action).
+It lives in memory, so it only covers the time since the extension was last
+loaded.
 
 Clean ad breaks are useful too, especially pre-rolls (open a new channel) and
 long mid-roll pods. Every rewrite during an ad is recorded with where each

@@ -13,6 +13,7 @@ const MEDIA_URLS = [
   "*://*.hls.ttvnw.net/v1/playlist/*",
 ];
 const MAX_TRACKED_URLS = 500;
+const REQUEST_LOG_LIMIT = 5000;
 const SECOND_PROBE_DELAY_MS = 15_000;
 const MIN_PROBE_INTERVAL_MS = 10_000;
 // Players Twitch opens alongside the main one: the small live window it shows
@@ -26,6 +27,23 @@ const streams = new Map();
 // tabId -> observation state shown in the popup.
 const tabs = new Map();
 let mode = "block";
+// Timing of every media playlist request, kept in memory and added to exports.
+// Shows whether a stall came from Twitch, an aborted request, or our rewriting.
+const requestLog = [];
+const pendingRequests = new Map();
+
+function finishRequest(requestId, fields) {
+  const record = pendingRequests.get(requestId);
+  if (!record) return;
+  Object.assign(record, fields(record));
+  pendingRequests.delete(requestId);
+  requestLog.push(record);
+  if (requestLog.length > REQUEST_LOG_LIMIT) requestLog.splice(0, requestLog.length - REQUEST_LOG_LIMIT);
+}
+
+function sinceStart(record) {
+  return record ? Date.now() - record.at : null;
+}
 // Each master playlist response starts a playback session; its renditions share it.
 let nextSessionId = 1;
 
@@ -87,12 +105,19 @@ function teeBody(requestId, onText) {
 
 // Buffers the whole response so it can be replaced. Any failure sends the
 // original bytes, so a bug here can never break playback outright.
-function rewriteBody(requestId, transform) {
+// `record` is this request's timing entry; the object stays valid even after
+// onCompleted has moved it from pendingRequests to requestLog.
+function rewriteBody(requestId, record, transform) {
   const filter = browser.webRequest.filterResponseData(requestId);
   const chunks = [];
-  filter.ondata = (event) => chunks.push(event.data);
+  filter.ondata = (event) => {
+    if (record && record.firstByteMs === undefined) record.firstByteMs = sinceStart(record);
+    chunks.push(event.data);
+  };
   filter.onstop = async () => {
+    if (record) record.bodyDoneMs = sinceStart(record);
     const original = new Uint8Array(await new Blob(chunks).arrayBuffer());
+    if (record) record.bytesIn = original.length;
     let output = original;
     try {
       const text = new TextDecoder().decode(original);
@@ -103,8 +128,15 @@ function rewriteBody(requestId, transform) {
     }
     filter.write(output);
     filter.close();
+    if (record) {
+      record.forwardedMs = sinceStart(record);
+      record.bytesOut = output.length;
+    }
   };
-  filter.onerror = () => log("filter error:", filter.error);
+  filter.onerror = () => {
+    if (record) record.filterError = filter.error;
+    log("filter error:", filter.error);
+  };
 }
 
 function parseUsherUrl(rawUrl) {
@@ -186,7 +218,7 @@ async function onMaster(details, text) {
 
 // Returns the text to send to the player. Recording happens afterwards so
 // storage writes never delay playback.
-async function onMedia(details, text) {
+async function onMedia(details, text, record) {
   const variant = variants.get(details.url) ?? null;
   let outcome = null;
   if (mode === "block") {
@@ -194,12 +226,27 @@ async function onMedia(details, text) {
     outcome = await rewriteMediaPlaylist(details.url, text, variant, getTab(details.tabId).usherParams);
     outcome.rewriteMs = Math.round(performance.now() - started);
   }
+  if (record) {
+    Object.assign(record, {
+      channel: variant?.channel ?? null,
+      variant: variant?.name ?? null,
+      action: outcome?.action ?? "observe",
+      rewriteMs: outcome?.rewriteMs ?? null,
+      window: outcome?.stats?.window ?? null,
+      mediaSequenceIn: Number(text.match(/#EXT-X-MEDIA-SEQUENCE:(\d+)/)?.[1] ?? NaN) || null,
+      adKind: outcome?.analysis?.adKind ?? null,
+    });
+  }
   observeMedia(details, text, variant, outcome).catch((err) => console.error("[delta]", err));
   return outcome?.text ?? text;
 }
 
 async function observeMedia(details, text, variant, outcome) {
   const tab = getTab(details.tabId);
+  if (!text.startsWith("#EXTM3U")) {
+    await Capture.add({ kind: "invalid-response", tabId: details.tabId, channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length, head: text.slice(0, 200) });
+    return;
+  }
   // Secondary players and previews share the tab. Only playlists from the main
   // player's master drive the tab's ad state; unknown URLs are recorded only.
   const isPageStream = Boolean(variant && variant.channel === tab.channel && variant.playerType === tab.playerType);
@@ -339,18 +386,37 @@ browser.webRequest.onBeforeRequest.addListener(
 browser.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (isOwnRequest(details) || !/\.m3u8(?:$|\?)/i.test(details.url)) return {};
-    rewriteBody(details.requestId, (text) => onMedia(details, text));
+    const record = { at: Date.now(), tabId: details.tabId, url: details.url.slice(-24) };
+    pendingRequests.set(details.requestId, record);
+    rewriteBody(details.requestId, record, (text) => onMedia(details, text, record));
     return {};
   },
   { urls: MEDIA_URLS },
   ["blocking"],
 );
 
+browser.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    const record = pendingRequests.get(details.requestId);
+    if (record) Object.assign(record, { status: details.statusCode, headersMs: sinceStart(record) });
+  },
+  { urls: MEDIA_URLS },
+);
+browser.webRequest.onCompleted.addListener(
+  (details) => finishRequest(details.requestId, (record) => ({ completedMs: sinceStart(record), fromCache: details.fromCache })),
+  { urls: MEDIA_URLS },
+);
+browser.webRequest.onErrorOccurred.addListener(
+  (details) => finishRequest(details.requestId, (record) => ({ error: details.error, errorMs: sinceStart(record) })),
+  { urls: MEDIA_URLS },
+);
+
 browser.tabs.onRemoved.addListener((tabId) => tabs.delete(tabId));
 
 async function exportCaptures() {
   const entries = await Capture.all();
-  const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), entries }, null, 1)], {
+  const requests = [...requestLog, ...pendingRequests.values()];
+  const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, requests, entries }, null, 1)], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
