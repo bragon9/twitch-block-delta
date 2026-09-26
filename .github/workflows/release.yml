@@ -53,7 +53,7 @@ jobs:
 
       - name: Lint
         if: steps.version.outputs.new == 'true'
-        run: npx --yes web-ext@8 lint --self-hosted --ignore-files "test/**" "tools/**"
+        run: npx --yes web-ext@10 lint --self-hosted --ignore-files "test/**" "tools/**"
 
       - name: Sign
         if: steps.version.outputs.new == 'true'
@@ -61,7 +61,7 @@ jobs:
           WEB_EXT_API_KEY: ${{ secrets.AMO_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_API_SECRET }}
         run: >
-          npx --yes web-ext@8 sign
+          npx --yes web-ext@10 sign
           --channel unlisted
           --ignore-files "test/**" "tools/**"
           --artifacts-dir web-ext-artifacts
