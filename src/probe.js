@@ -69,7 +69,7 @@ async function probeRendition(master, wanted, target, playerType, authLabel) {
     const text = await fetchText(variant.url);
     const analysis = analyzeMedia(text);
     const { tabId, channel, round } = target;
-    await Capture.add({
+    await record({
       kind: "probe",
       round,
       tabId,
@@ -114,7 +114,7 @@ async function probeAdBreak(target) {
     for (const [label, token] of auths) jobs.push(probeOne(target, playerType, label, token));
   }
   const results = await Promise.all(jobs);
-  await Capture.add({
+  await record({
     kind: "event",
     event: "probe-summary",
     round: target.round,

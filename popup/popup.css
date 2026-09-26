@@ -80,6 +80,15 @@ td {
   border-color: var(--accent);
   color: #fff;
 }
+.toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 8px 0 4px;
+}
+select {
+  font: inherit;
+}
 footer {
   display: flex;
   gap: 8px;

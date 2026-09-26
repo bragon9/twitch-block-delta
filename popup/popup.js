@@ -76,9 +76,26 @@ for (const name of ["block", "observe"]) {
   });
 }
 
+const logModeEl = document.getElementById("log-mode");
+const logNoteEl = document.getElementById("log-note");
+logModeEl.addEventListener("change", async () => {
+  await browser.runtime.sendMessage({ type: "setLogMode", logMode: logModeEl.value });
+  refresh();
+});
+
+function logNote(state) {
+  if (state.logMode === "off") return "Nothing is recorded.";
+  if (state.logMode === "always") return "Recording every capture to extension storage.";
+  const last = state.lastDump;
+  const lastText = !last ? "" : last.error ? ` Last save failed: ${last.error}` : ` Last file: ${ago(last.at)} (${last.reasons.join(", ")}).`;
+  return `Watching in memory (${state.ring.count} entries). A file goes to Downloads/twitch-block-delta/ if something goes wrong.${lastText}`;
+}
+
 async function refresh() {
   const state = await browser.runtime.sendMessage({ type: "state" });
   renderMode(state.mode);
+  if (logModeEl.value !== state.logMode) logModeEl.value = state.logMode;
+  logNoteEl.textContent = logNote(state);
   const mb = (n) => (n / 1024 / 1024).toFixed(1);
   summaryEl.textContent = `${state.captures} captures · ${mb(state.storage.bytes)} of ${mb(state.storage.maxBytes)} MB · ${state.tabs.length} tab(s)`;
   tabsEl.replaceChildren(...state.tabs.map(renderTab));
@@ -87,6 +104,11 @@ async function refresh() {
 document.getElementById("export").addEventListener("click", async () => {
   const { exported } = await browser.runtime.sendMessage({ type: "export" });
   summaryEl.textContent = `Exported ${exported} captures.`;
+});
+
+document.getElementById("dump").addEventListener("click", async () => {
+  const { entries } = await browser.runtime.sendMessage({ type: "dumpNow" });
+  summaryEl.textContent = `Saved the last ${entries} recent entries.`;
 });
 
 document.getElementById("clear").addEventListener("click", async () => {
