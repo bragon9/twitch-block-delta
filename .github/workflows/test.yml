@@ -1,9 +1,8 @@
 name: Test
 
+# Gates merges into main. The Release workflow re-runs the tests before signing.
 on:
   pull_request:
-  push:
-    branches: [main]
 
 jobs:
   test:
