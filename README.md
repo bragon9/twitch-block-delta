@@ -1,9 +1,93 @@
 # Twitch Block Delta
 
-A Firefox-only Twitch ad blocker, built from scratch. It removes ads by
-rewriting Twitch's playlists before the player sees them, so it never has to
-pause, reload or resume the player. That is what caused the background-tab
-stalls in TTV AB.
+A Firefox-only Twitch ad blocker. It removes ads by rewriting Twitch's playlists
+before the player sees them, so the player is never paused, reloaded or resumed,
+and streams in background tabs behave exactly like visible ones.
+
+## Install
+
+Download the `.xpi` from the
+[latest release](https://github.com/bragon9/twitch-block-delta/releases/latest)
+and drag it into Firefox (or Zen). It is signed by Mozilla for
+self-distribution, not listed on addons.mozilla.org, and updates itself from this
+repo's releases. To check for an update right away: `about:addons` → gear →
+**Check for Updates**.
+
+Disable other Twitch ad blockers (TTV AB, TTV LOL PRO) first. Refresh any open
+Twitch tabs after installing: the extension only knows a stream from its master
+playlist, which a running player has already fetched.
+
+## Using it
+
+The popup shows each Twitch tab's state: the channel, rendition, ad breaks seen
+and the last rewrite.
+
+### Modes
+
+- **Block** (default): rewrites playlists. During an ad the badge is green when
+  the ad is being replaced cleanly, red when it isn't.
+- **Observe only**: passes everything through unchanged and probes other player
+  types during ads. Use it to capture raw ad data.
+
+### Logging
+
+- **Problems only** (default): the last ~2 minutes of captures are kept in
+  memory only. If something goes wrong, they are saved with the ~15s after it to
+  `Downloads/twitch-block-delta/problem-<time>.json`, with no prompt. Problems
+  are:
+  - a rewrite that threw or returned an error (backup fetch failed, backup also
+    had ads);
+  - an ad the player was left to see;
+  - a rewrite that left nothing live to play;
+  - a rewrite slower than 2s;
+  - a response that isn't a playlist.
+
+  Files are limited to one per minute and 25 per browser session. **Save
+  recent** writes the buffer on demand.
+- **Always**: every capture is stored in extension storage, up to 150 MB, oldest
+  first. **Export captures** saves them; **Clear** deletes them.
+- **Off**: nothing is recorded and the `[delta]` console lines stop.
+
+Logging only affects recording; blocking is the same in every setting.
+
+## Reporting a problem
+
+Problem files are written automatically. For anything the extension didn't
+notice, click **Save recent** within about two minutes, and note the time, the
+channel and what you saw. Worth reporting:
+
+- An ad you could see or hear, even partly.
+- A freeze, spinner, black screen, audio drop, or the stream jumping back or
+  skipping ahead, especially right when an ad would start or end.
+- A quality drop or the quality selector acting oddly.
+- A red **AD** badge.
+- A stream in a background tab that didn't keep playing through an ad.
+
+For longer investigations, switch logging to **Always** and use **Export
+captures**. Every file also includes a timing log of each media playlist request
+(start, first byte, body done, forwarded to the player, status, errors, action),
+kept in memory for the last 20,000 requests.
+
+Problem files hold full playlist text. **Always** exports store playlists as
+lossless deltas against the previous playlist of the same stream (about 12x
+smaller); expand one with:
+
+```sh
+tools/expand_export.py twitch-block-delta-….json   # writes ….expanded.json
+```
+
+Each splice also records the backup playlist it used, so any rewrite can be
+replayed offline.
+
+Captured files contain short-lived signed URLs and your Twitch user ID inside ad
+tokens. Don't post them publicly.
+
+## Privacy
+
+The extension sends nothing anywhere except Twitch. To fetch an ad-free backup
+playlist it reads your Twitch login cookie and uses it only with Twitch's own
+API (`gql.twitch.tv`). Logs stay on your computer, in extension storage or your
+Downloads folder.
 
 ## How it works
 
@@ -24,106 +108,55 @@ segments from two sessions).
   at the live edge. The ad is only shown when there is nothing live at all to
   serve (e.g. a pre-roll with no backup).
 
-`src/splice.js` is the pure splicing logic, tested against real playlists.
-`src/blocker.js` fetches the backup session. `src/background.js` wires it into
-`webRequest.filterResponseData` and records everything.
+| File | Role |
+| --- | --- |
+| `src/splice.js` | Pure splicing logic, tested against real playlists |
+| `src/blocker.js` | Fetches the backup session and rewrites media playlists |
+| `src/background.js` | Wires it into `webRequest.filterResponseData`; logging |
+| `src/playlist.js` | Playlist parsing and ad detection |
+| `src/probe.js` | Twitch API calls; ad-break probes in Observe mode |
+| `src/capture.js`, `src/delta.js` | Persistent capture storage (Always) |
+| `src/ring.js` | In-memory buffer (Problems only) |
 
-## Load it (Zen / Firefox)
+## Development
 
-1. Disable other Twitch ad blockers (TTV AB, TTV LOL PRO).
-2. Open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
-   pick `manifest.json`. After code changes, click **Reload** on its card,
-   then **refresh any open Twitch tabs**. The extension only knows a stream
-   from its master playlist, which a running player has already fetched.
-3. The popup header shows the version. Check it after reloading.
-4. **Inspect** on the card opens the console; lines are prefixed `[delta]`.
+### Load from source
 
-Temporary add-ons are removed when the browser quits. Export before restarting.
+1. Open `about:debugging#/runtime/this-firefox` → **Load Temporary Add-on…** →
+   pick `manifest.json`. It has the same ID as the signed build, so disable or
+   remove that one first. Temporary add-ons are removed when the browser quits.
+2. After code changes, click **Reload** on its card, then refresh any open
+   Twitch tabs. The popup header shows the version.
+3. **Inspect** on the card opens the console; lines are prefixed `[delta]`.
 
-## Install a signed build
-
-Download the `.xpi` from the latest
-[release](https://github.com/bragon9/twitch-block-delta/releases/latest) and
-drag it into Firefox. It is signed by Mozilla as unlisted (not on
-addons.mozilla.org) and updates itself from this repo's releases.
-
-To release: bump `version` in `manifest.json` in a PR and merge it. The Release
-workflow signs that version and publishes it; merges that don't change the
-version release nothing.
-
-## Modes
-
-- **Block** (default): rewrites playlists. During an ad the badge is green when
-  the ad is being replaced cleanly, red when it isn't.
-- **Observe only**: passes everything through unchanged and probes other player
-  types during ads. Use it to capture raw ad data.
-
-## Logging
-
-Set in the popup:
-
-- **Problems only** (default): the last ~2 minutes of captures are kept in
-  memory only. If something goes wrong, they are saved with the ~15s after it to
-  `Downloads/twitch-block-delta/problem-<time>.json`, with no prompt. Problems
-  are: a rewrite that threw or returned an error (backup fetch failed, backup
-  also had ads), an ad the player was left to see, a rewrite that left nothing
-  live to play, a rewrite slower than 2s, and a non-playlist response. Files are
-  limited to one per minute and 25 per browser session. **Save recent** writes
-  the buffer on demand. These files hold full playlist text, so they need no
-  expanding.
-- **Always**: every capture is stored in extension storage (see below) and
-  exported by hand.
-- **Off**: nothing is recorded and the `[delta]` console lines stop.
-
-The setting only affects recording; blocking is the same in every setting.
-
-## What to collect
-
-Export from the popup (**Export captures**) after any of these, and note the
-time, the channel and what you saw:
-
-- An ad you could see or hear, even partly.
-- A freeze, spinner, black screen, audio drop, or the stream jumping back or
-  skipping ahead, especially right when an ad would start or end.
-- A quality drop or the quality selector acting oddly.
-- A red **AD** badge.
-- A stream left in a **background tab** through an ad: did it keep playing
-  when you came back?
-
-Every export also includes a timing log of each media playlist request (start,
-first byte, body done, forwarded to the player, status, abort/errors, action).
-It lives in memory (last 20,000 requests, roughly 10 hours of one stream), so it
-only covers the time since the extension was last loaded.
-
-Captures are capped at 150 MB (shown in the popup), oldest first. Playlists are
-stored as lossless deltas against the previous playlist of the same stream,
-about 12x smaller than full text, so a day of watching fits. Exports keep that
-compact form. Expand one to full playlist text with:
-
-```sh
-tools/expand_export.py twitch-block-delta-….json   # writes ….expanded.json
-```
-
-Each splice also records the backup playlist it used, so any rewrite can be
-replayed offline.
-
-Clean ad breaks are useful too, especially pre-rolls (open a new channel) and
-long mid-roll pods. Every rewrite during an ad is recorded with where each
-segment came from.
-
-Exports contain short-lived signed URLs and your Twitch user ID inside ad
-tokens. Don't post them publicly.
-
-## Tests
+### Tests
 
 ```sh
 test/run.sh
 ```
 
-This runs the tests with macOS's JavaScriptCore via `osascript` (no Node
-needed). Fixtures are real playlists with URLs, session IDs and ad-tracking
-fields redacted. `synthetic-ad-media.m3u8` is hand-written and kept only as a
+Runs the tests with macOS's JavaScriptCore via `osascript` (no Node needed).
+Fixtures are real playlists with URLs, session IDs and ad-tracking fields
+redacted. `synthetic-ad-media.m3u8` is hand-written and kept only as a
 marker-coverage test.
+
+CI runs the tests and `web-ext lint` on every pull request; `main` only accepts
+changes through a pull request with passing checks.
+
+### Releasing
+
+Bump `version` in `manifest.json` in a pull request and merge it. The Release
+workflow then signs that version with Mozilla as unlisted and publishes a GitHub
+Release with the `.xpi` and an `updates.json`, which installed copies check
+through the manifest's `update_url`. Merges that don't change the version
+release nothing.
+
+Mozilla accepts each version number once. If a run fails before signing, re-run
+it from **Actions → Release → Run workflow**; if it fails after, bump the version
+again.
+
+The workflow needs the repository secrets `AMO_API_KEY` and `AMO_API_SECRET`
+(from https://addons.mozilla.org/developers/addon/api/key/).
 
 ## License
 
