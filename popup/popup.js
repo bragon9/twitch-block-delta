@@ -79,7 +79,8 @@ for (const name of ["block", "observe"]) {
 async function refresh() {
   const state = await browser.runtime.sendMessage({ type: "state" });
   renderMode(state.mode);
-  summaryEl.textContent = `${state.captures} captures stored · ${state.tabs.length} tab(s) observed`;
+  const mb = (n) => (n / 1024 / 1024).toFixed(1);
+  summaryEl.textContent = `${state.captures} captures · ${mb(state.storage.bytes)} of ${mb(state.storage.maxBytes)} MB · ${state.tabs.length} tab(s)`;
   tabsEl.replaceChildren(...state.tabs.map(renderTab));
 }
 

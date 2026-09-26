@@ -69,7 +69,19 @@ async function probeRendition(master, wanted, target, playerType, authLabel) {
     const text = await fetchText(variant.url);
     const analysis = analyzeMedia(text);
     const { tabId, channel, round } = target;
-    await Capture.add({ kind: "probe", round, tabId, channel, playerType, auth: authLabel, variant: variant.name, codecs: variant.codecs, analysis, text });
+    await Capture.add({
+      kind: "probe",
+      round,
+      tabId,
+      channel,
+      playerType,
+      auth: authLabel,
+      variant: variant.name,
+      codecs: variant.codecs,
+      analysis,
+      chain: `probe:${channel}:${playerType}:${authLabel}:${variant.stableId}:${variant.codecs}`,
+      text,
+    });
     return { wanted: wanted.name, variant: variant.name, codecs: variant.codecs, isAd: analysis.isAd, adKind: analysis.adKind, adReasons: analysis.adReasons };
   } catch (err) {
     return { wanted: wanted.name, variant: variant.name, error: String(err?.message || err) };

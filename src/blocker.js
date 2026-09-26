@@ -48,7 +48,7 @@ async function fetchBackupPlaylist(variant, usherParams) {
     const backupVariant = pickVariant(master.variants, variant);
     if (!backupVariant) throw new Error(`backup has no ${variant.name} (${variant.codecs})`);
     try {
-      return { text: await fetchText(backupVariant.url), variant: backupVariant.name, auth };
+      return { text: await fetchText(backupVariant.url), url: backupVariant.url, variant: backupVariant.name, auth };
     } catch (err) {
       if (refresh) throw err;
     }
@@ -91,7 +91,15 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
   }
 
   const { text, stats } = spliceMediaPlaylist(nativeText, backup?.text ?? null, memory);
-  const base = { analysis, stats, error, backupVariant: backup?.variant ?? null, backupAuth: backup?.auth ?? null };
+  const base = {
+    analysis,
+    stats,
+    error,
+    backupVariant: backup?.variant ?? null,
+    backupAuth: backup?.auth ?? null,
+    backupUrl: backup?.url ?? null,
+    backupText: backup?.text ?? null,
+  };
   if (text === null) return { ...base, text: nativeText, action: "fallback-native" };
   if (stats.backupAdSegments > 0) base.error ??= `backup also had ${stats.backupAdSegments} ad segments`;
   const action = stats.fromBackup > 0 ? "splice" : analysis.adKind === "stitched" ? "strip-ad" : "renumber";

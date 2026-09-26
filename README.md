@@ -62,8 +62,20 @@ time, the channel and what you saw:
 
 Every export also includes a timing log of each media playlist request (start,
 first byte, body done, forwarded to the player, status, abort/errors, action).
-It lives in memory, so it only covers the time since the extension was last
-loaded.
+It lives in memory (last 20,000 requests, roughly 10 hours of one stream), so it
+only covers the time since the extension was last loaded.
+
+Captures are capped at 150 MB (shown in the popup), oldest first. Playlists are
+stored as lossless deltas against the previous playlist of the same stream,
+about 12x smaller than full text, so a day of watching fits. Exports keep that
+compact form. Expand one to full playlist text with:
+
+```sh
+tools/expand_export.py twitch-block-delta-….json   # writes ….expanded.json
+```
+
+Each splice also records the backup playlist it used, so any rewrite can be
+replayed offline.
 
 Clean ad breaks are useful too, especially pre-rolls (open a new channel) and
 long mid-roll pods. Every rewrite during an ad is recorded with where each

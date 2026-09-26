@@ -1,3 +1,4 @@
 *.json.export
 twitch-block-delta-*.json
 .DS_Store
+test/.delta-crosscheck.json

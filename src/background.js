@@ -13,7 +13,7 @@ const MEDIA_URLS = [
   "*://*.hls.ttvnw.net/v1/playlist/*",
 ];
 const MAX_TRACKED_URLS = 500;
-const REQUEST_LOG_LIMIT = 5000;
+const REQUEST_LOG_LIMIT = 20_000;
 const SECOND_PROBE_DELAY_MS = 15_000;
 const MIN_PROBE_INTERVAL_MS = 10_000;
 // Players Twitch opens alongside the main one: the small live window it shows
@@ -269,10 +269,10 @@ async function observeMedia(details, text, variant, outcome) {
     pageStream: isPageStream,
   };
   if (analysis.isAd && previous && !previous.isAd) {
-    await Capture.add({ kind: "media", reason: "pre-ad", ...base, analysis: analyzeMedia(previous.text), text: previous.text });
+    await Capture.add({ kind: "media", reason: "pre-ad", ...base, analysis: analyzeMedia(previous.text), chain: `native:${details.url}`, text: previous.text });
   }
   const reason = !previous ? "first" : previous.signature !== signature ? "markup-changed" : analysis.isAd ? "ad" : null;
-  if (reason) await Capture.add({ kind: "media", reason, ...base, analysis, text });
+  if (reason) await Capture.add({ kind: "media", reason, ...base, analysis, chain: `native:${details.url}`, text });
 
   if (outcome && outcome.action !== "pass") {
     if (isPageStream) {
@@ -293,8 +293,20 @@ async function observeMedia(details, text, variant, outcome) {
         backupVariant: outcome.backupVariant ?? null,
         backupAuth: outcome.backupAuth ?? null,
         rewriteMs: outcome.rewriteMs,
+        chain: `output:${details.url}`,
         text: outcome.text,
       });
+      // The backup playlist this rewrite used, so any splice can be replayed exactly.
+      if (outcome.backupText) {
+        await Capture.add({
+          kind: "backup",
+          ...base,
+          backupVariant: outcome.backupVariant,
+          backupAuth: outcome.backupAuth,
+          chain: `backup:${outcome.backupUrl}`,
+          text: outcome.backupText,
+        });
+      }
     }
     if (outcome.error) log(`${outcome.action} ${base.channel} ${base.variant}: ${outcome.error}`);
   }
@@ -416,7 +428,15 @@ browser.tabs.onRemoved.addListener((tabId) => tabs.delete(tabId));
 async function exportCaptures() {
   const entries = await Capture.all();
   const requests = [...requestLog, ...pendingRequests.values()];
-  const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, requests, entries }, null, 1)], {
+  // Entries are exported in stored form; tools/expand_export.py restores texts.
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    version: browser.runtime.getManifest().version,
+    encoding: EXPORT_ENCODING,
+    requests,
+    entries,
+  };
+  const blob = new Blob([JSON.stringify(payload)], {
     type: "application/json",
   });
   const url = URL.createObjectURL(blob);
@@ -435,6 +455,7 @@ browser.runtime.onMessage.addListener(async (message) => {
       return {
         mode,
         captures: await Capture.count(),
+        storage: await Capture.stats(),
         tabs: [...tabs.values()].map(({ usherParams, ...rest }) => rest),
       };
     case "export":
