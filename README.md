@@ -40,6 +40,17 @@ segments from two sessions).
 
 Temporary add-ons are removed when the browser quits. Export before restarting.
 
+## Install a signed build
+
+Download the `.xpi` from the latest
+[release](https://github.com/bragon9/twitch-block-delta/releases/latest) and
+drag it into Firefox. It is signed by Mozilla as unlisted (not on
+addons.mozilla.org) and updates itself from this repo's releases.
+
+To release: bump `version` in `manifest.json` in a PR and merge it. The Release
+workflow signs that version and publishes it; merges that don't change the
+version release nothing.
+
 ## Modes
 
 - **Block** (default): rewrites playlists. During an ad the badge is green when
