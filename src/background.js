@@ -26,6 +26,8 @@ const streams = new Map();
 // tabId -> observation state shown in the popup.
 const tabs = new Map();
 let mode = "block";
+// Each master playlist response starts a playback session; its renditions share it.
+let nextSessionId = 1;
 
 function remember(map, key, value) {
   map.delete(key);
@@ -154,8 +156,10 @@ async function onMaster(details, text) {
   tab.masters++;
   tab.lastMasterAt = Date.now();
 
+  const session = nextSessionId++;
   for (const v of master.variants) {
     remember(variants, v.url, {
+      session,
       channel,
       playerType,
       name: v.name,
@@ -186,7 +190,9 @@ async function onMedia(details, text) {
   const variant = variants.get(details.url) ?? null;
   let outcome = null;
   if (mode === "block") {
+    const started = performance.now();
     outcome = await rewriteMediaPlaylist(details.url, text, variant, getTab(details.tabId).usherParams);
+    outcome.rewriteMs = Math.round(performance.now() - started);
   }
   observeMedia(details, text, variant, outcome).catch((err) => console.error("[delta]", err));
   return outcome?.text ?? text;
@@ -225,7 +231,8 @@ async function observeMedia(details, text, variant, outcome) {
     if (isPageStream) {
       tab.lastAction = outcome.action;
       tab.actionCounts[outcome.action] = (tab.actionCounts[outcome.action] || 0) + 1;
-      tab.lastBlock = { at: Date.now(), action: outcome.action, stats: outcome.stats ?? null, error: outcome.error ?? null, backupVariant: outcome.backupVariant ?? null };
+      tab.lastBlock = { at: Date.now(), action: outcome.action, stats: outcome.stats ?? null, error: outcome.error ?? null, backupVariant: outcome.backupVariant ?? null, rewriteMs: outcome.rewriteMs };
+      tab.maxRewriteMs = Math.max(tab.maxRewriteMs || 0, outcome.rewriteMs);
     }
     // Keep every rewrite made during an ad, plus the first of each other kind per stream.
     const previousAction = previous?.action ?? null;
@@ -238,6 +245,7 @@ async function observeMedia(details, text, variant, outcome) {
         error: outcome.error ?? null,
         backupVariant: outcome.backupVariant ?? null,
         backupAuth: outcome.backupAuth ?? null,
+        rewriteMs: outcome.rewriteMs,
         text: outcome.text,
       });
     }

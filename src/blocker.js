@@ -10,9 +10,12 @@ const BACKUP_FETCH_TIMEOUT_MS = 3_000;
 
 // channel -> { fetchedAt, promise } for the backup session's master playlist.
 const backupMasters = new Map();
-// Media playlist URL -> splice memory. Once a stream has had a stitched ad, every
-// later playlist for it is rewritten so its numbering stays continuous.
+// Media playlist URL -> splice memory.
 const splicedStreams = new Map();
+// Playback sessions (one per master playlist) that have had a stitched ad. From
+// then on every rendition of the session is numbered by live sequence, so a
+// quality switch after a blocked ad lands on consistent numbers.
+const splicedSessions = new Map();
 
 function withTimeout(promise, ms, label) {
   let timer;
@@ -62,7 +65,8 @@ async function fetchBackupPlaylist(variant, usherParams) {
 async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
   const analysis = analyzeMedia(nativeText);
   let memory = splicedStreams.get(url);
-  if (!memory && analysis.adKind !== "stitched") {
+  const sessionSpliced = variant ? splicedSessions.has(variant.session) : false;
+  if (!memory && !sessionSpliced && analysis.adKind !== "stitched") {
     if (analysis.adKind === "client") return { text: stripAdMarkers(nativeText).text, action: "strip-markers", analysis };
     return { text: nativeText, action: "pass", analysis };
   }
@@ -70,6 +74,7 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
     memory = newSpliceMemory();
     remember(splicedStreams, url, memory);
   }
+  if (variant) remember(splicedSessions, variant.session, true);
 
   let backup = null;
   let error = null;

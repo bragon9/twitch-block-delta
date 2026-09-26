@@ -54,6 +54,7 @@ function renderTab(tab) {
     const s = tab.lastBlock.stats;
     const detail = s ? ` · live ${s.window?.join("–") ?? "?"} · ${s.fromBackup} backup / ${s.fromNative} page` : "";
     fields.push(["Last rewrite", `${tab.lastBlock.action}${detail} (${ago(tab.lastBlock.at)})`]);
+    fields.push(["Rewrite delay", `last ${tab.lastBlock.rewriteMs} ms · max ${tab.maxRewriteMs} ms`]);
     if (tab.lastBlock.error) fields.push(["Last problem", tab.lastBlock.error]);
   }
   return el("section", { className: "tab" }, [
