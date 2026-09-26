@@ -1,0 +1,53 @@
+name: Release
+
+# Push a tag matching manifest.json's version, e.g. `git tag v0.4.1 && git push origin v0.4.1`.
+# Needs repository secrets AMO_API_KEY and AMO_API_SECRET
+# (https://addons.mozilla.org/developers/addon/api/key/).
+# The channel comes from the AMO_CHANNEL repository variable: "unlisted" (default)
+# signs and attaches the .xpi to a GitHub Release; "listed" submits to AMO for review.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  release:
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    env:
+      CHANNEL: ${{ vars.AMO_CHANNEL || 'unlisted' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches manifest.json
+        run: |
+          version=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match manifest version $version"
+            exit 1
+          fi
+
+      - run: test/run.sh
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Lint
+        run: npx --yes web-ext@8 lint --ignore-files "test/**" "tools/**" $([ "$CHANNEL" = unlisted ] && echo --self-hosted)
+
+      - name: Sign
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+        run: >
+          npx --yes web-ext@8 sign
+          --channel "$CHANNEL"
+          --ignore-files "test/**" "tools/**"
+          --artifacts-dir web-ext-artifacts
+
+      - name: Attach the signed .xpi to a GitHub Release
+        if: env.CHANNEL == 'unlisted'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" web-ext-artifacts/*.xpi --title "$GITHUB_REF_NAME" --generate-notes
