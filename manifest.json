@@ -1,0 +1,38 @@
+{
+  "manifest_version": 2,
+  "name": "Twitch Block Delta",
+  "version": "0.3.0",
+  "description": "Firefox-only Twitch ad blocker that splices ad-free live segments into the stream. Records playlists for debugging.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "twitch-block-delta@local",
+      "strict_min_version": "128.0"
+    }
+  },
+  "permissions": [
+    "webRequest",
+    "webRequestBlocking",
+    "storage",
+    "unlimitedStorage",
+    "cookies",
+    "downloads",
+    "*://*.twitch.tv/*",
+    "*://*.ttvnw.net/*",
+    "*://*.live-video.net/*"
+  ],
+  "background": {
+    "scripts": [
+      "src/playlist.js",
+      "src/splice.js",
+      "src/capture.js",
+      "src/probe.js",
+      "src/blocker.js",
+      "src/background.js"
+    ],
+    "persistent": true
+  },
+  "browser_action": {
+    "default_title": "Twitch Block Delta",
+    "default_popup": "popup/popup.html"
+  }
+}

@@ -1,0 +1,15 @@
+#EXTM3U
+# SYNTHETIC fixture: modelled on markers other blockers detect, not a captured ad.
+#EXT-X-VERSION:6
+#EXT-X-TARGETDURATION:6
+#EXT-X-MEDIA-SEQUENCE:100
+#EXT-X-DATERANGE:ID="source-1",CLASS="twitch-stream-source",START-DATE="2026-09-26T01:05:05.729Z",END-ON-NEXT=YES,X-TV-TWITCH-STREAM-SOURCE="live"
+#EXT-X-MAP:URI="https://example.hls.ttvnw.net/v1/segment/init-live"
+#EXT-X-PROGRAM-DATE-TIME:2026-09-26T01:05:05.729Z
+#EXTINF:2.000,live
+https://example.hls.ttvnw.net/v1/segment/live-100
+#EXT-X-DISCONTINUITY
+#EXT-X-DATERANGE:ID="stitched-ad-1790384710-30",CLASS="twitch-stitched-ad",START-DATE="2026-09-26T01:05:07.729Z",DURATION=30.000,X-TV-TWITCH-AD-POD-LENGTH="1",X-TV-TWITCH-AD-POD-POSITION="0"
+#EXT-X-MAP:URI="https://example.hls.ttvnw.net/v1/segment/init-ad"
+#EXTINF:2.000,Amazon|ad-creative
+https://example.hls.ttvnw.net/v1/segment/ad-101

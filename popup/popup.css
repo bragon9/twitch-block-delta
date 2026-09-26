@@ -1,0 +1,102 @@
+:root {
+  --bg: #fff;
+  --fg: #1d1d1f;
+  --muted: #6e6e73;
+  --line: #e2e2e6;
+  --ad: #c0392b;
+  --ok: #1e8449;
+  --accent: #6441a5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1b22;
+    --fg: #ececf1;
+    --muted: #9a9aa6;
+    --line: #34333d;
+    --ad: #e5675a;
+    --ok: #5cc98a;
+    --accent: #a98bea;
+  }
+}
+body {
+  margin: 0;
+  padding: 12px;
+  width: 340px;
+  font: 13px/1.4 system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.muted {
+  color: var(--muted);
+}
+.tab {
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+.tab h2 {
+  margin: 0 0 4px;
+  font-size: 13px;
+}
+.state-ad {
+  color: var(--ad);
+  font-weight: 600;
+}
+.state-ok {
+  color: var(--ok);
+}
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  margin: 0;
+}
+dt {
+  color: var(--muted);
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 6px;
+}
+td {
+  padding: 1px 4px 1px 0;
+}
+.mode {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+.mode button[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+footer {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+button {
+  flex: 1;
+  padding: 6px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+button.secondary {
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid var(--line);
+}

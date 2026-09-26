@@ -1,0 +1,3 @@
+*.json.export
+twitch-block-delta-*.json
+.DS_Store
