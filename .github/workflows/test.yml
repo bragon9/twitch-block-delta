@@ -14,4 +14,4 @@ jobs:
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - run: npx --yes web-ext@10 lint --self-hosted --ignore-files "test/**" "tools/**"
+      - run: npx --yes web-ext@10 lint --ignore-files "test/**" "tools/**" "amo/**"

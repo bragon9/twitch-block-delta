@@ -1,0 +1,64 @@
+name: Attach AMO build
+
+# Once AMO approves the latest release's version, attaches the signed .xpi from
+# AMO to the GitHub Release, plus an updates.json that points at AMO's copy.
+#
+# Copies installed before 0.6.0 were self-distributed and check
+# releases/latest/download/updates.json for updates. That file moves them onto
+# the listed version, which has no update_url, so from then on AMO updates them.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: attach-amo
+  cancel-in-progress: false
+
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Attach the approved build
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -qx updates.json; then
+            echo "$tag already has updates.json; nothing to do."
+            exit 0
+          fi
+          version=${tag#v}
+          id=$(python3 -c "import json; print(json.load(open('manifest.json'))['browser_specific_settings']['gecko']['id'])")
+
+          api="https://addons.mozilla.org/api/v5/addons/addon/$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$id")/versions/$version/"
+          if ! curl -fsS "$api" -o version.json; then
+            echo "$version isn't public on AMO yet."
+            exit 0
+          fi
+          read -r file_status url hash < <(python3 -c "import json; f = json.load(open('version.json'))['file']; print(f['status'], f['url'], f['hash'])")
+          if [ "$file_status" != "public" ]; then
+            echo "$version is $file_status on AMO; waiting for approval."
+            exit 0
+          fi
+
+          xpi="twitch-block-delta-$version.xpi"
+          curl -fsSL "$url" -o "$xpi"
+          actual="sha256:$(sha256sum "$xpi" | cut -d' ' -f1)"
+          if [ "$actual" != "$hash" ]; then
+            echo "Downloaded file's hash $actual doesn't match AMO's $hash."
+            exit 1
+          fi
+
+          python3 - "$id" "$version" "$url" "$hash" > updates.json <<'PY'
+          import json, sys
+          addon_id, version, link, digest = sys.argv[1:]
+          update = {"version": version, "update_link": link, "update_hash": digest}
+          print(json.dumps({"addons": {addon_id: {"updates": [update]}}}, indent=2))
+          PY
+          cat updates.json
+          gh release upload "$tag" "$xpi" updates.json
