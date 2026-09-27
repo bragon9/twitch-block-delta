@@ -7,8 +7,6 @@
   --track: #f0f0f4;
   --accent: #2a1545;
   --ok: #1e8449;
-  --ok-bg: #eef7f1;
-  --ok-fg: #17683a;
   --ad: #c0392b;
   --ad-bg: #fbeeec;
   --ad-fg: #a1301f;
@@ -25,8 +23,6 @@
     --track: #2b2a33;
     --accent: #5b3d8a;
     --ok: #5cc98a;
-    --ok-bg: #1d3226;
-    --ok-fg: #7fd9a3;
     --ad: #e5675a;
     --ad-bg: #3a2226;
     --ad-fg: #f29a90;
@@ -69,10 +65,6 @@ header strong {
   border-radius: 8px;
   font-weight: 600;
   background: var(--panel);
-}
-.status.ok {
-  background: var(--ok-bg);
-  color: var(--ok-fg);
 }
 .status.ad {
   background: var(--ad-bg);

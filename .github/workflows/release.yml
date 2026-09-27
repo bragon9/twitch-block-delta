@@ -3,10 +3,11 @@ name: Release
 # Runs on every push to main, but only releases when manifest.json has a version
 # that has no GitHub Release yet. To release: bump "version" in a PR and merge it.
 #
-# Signs the add-on as unlisted (self-distributed) and publishes a GitHub Release
-# with the signed .xpi and updates.json. Installed copies find new versions
-# through the manifest's update_url, which points at the latest release's
-# updates.json.
+# Submits the add-on to addons.mozilla.org (AMO) as a listed version and
+# publishes a GitHub Release for it. AMO reviews the version before it can be
+# downloaded, so the release starts without an .xpi; the "Attach AMO build"
+# workflow adds it once AMO approves. The listing text comes from
+# amo/metadata.json.
 #
 # Needs repository secrets AMO_API_KEY (JWT issuer) and AMO_API_SECRET
 # (https://addons.mozilla.org/developers/addon/api/key/).
@@ -33,8 +34,7 @@ jobs:
       - name: Is this version new?
         id: version
         run: |
-          read -r id version < <(python3 -c "import json; m = json.load(open('manifest.json')); print(m['browser_specific_settings']['gecko']['id'], m['version'])")
-          echo "id=$id" >> "$GITHUB_OUTPUT"
+          version=$(python3 -c "import json; print(json.load(open('manifest.json'))['version'])")
           echo "version=$version" >> "$GITHUB_OUTPUT"
           if gh release view "v$version" > /dev/null 2>&1; then
             echo "v$version is already released; nothing to do."
@@ -53,40 +53,23 @@ jobs:
 
       - name: Lint
         if: steps.version.outputs.new == 'true'
-        run: npx --yes web-ext@10 lint --self-hosted --ignore-files "test/**" "tools/**"
+        run: npx --yes web-ext@10 lint --ignore-files "test/**" "tools/**" "amo/**"
 
-      - name: Sign
+      - name: Submit to AMO
         if: steps.version.outputs.new == 'true'
         env:
           WEB_EXT_API_KEY: ${{ secrets.AMO_API_KEY }}
           WEB_EXT_API_SECRET: ${{ secrets.AMO_API_SECRET }}
+        # --approval-timeout 0: submit and return; review can take days.
         run: >
           npx --yes web-ext@10 sign
-          --channel unlisted
-          --ignore-files "test/**" "tools/**"
-          --artifacts-dir web-ext-artifacts
-
-      - name: Write updates.json
-        if: steps.version.outputs.new == 'true'
-        env:
-          ID: ${{ steps.version.outputs.id }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          mkdir dist
-          xpi="twitch-block-delta-$VERSION.xpi"
-          mv web-ext-artifacts/*.xpi "dist/$xpi"
-          hash=$(shasum -a 256 "dist/$xpi" | cut -d' ' -f1)
-          link="https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/$xpi"
-          python3 - "$ID" "$VERSION" "$link" "$hash" > dist/updates.json <<'PY'
-          import json, sys
-          addon_id, version, link, digest = sys.argv[1:]
-          update = {"version": version, "update_link": link, "update_hash": f"sha256:{digest}"}
-          print(json.dumps({"addons": {addon_id: {"updates": [update]}}}, indent=2))
-          PY
-          cat dist/updates.json
+          --channel listed
+          --amo-metadata amo/metadata.json
+          --approval-timeout 0
+          --ignore-files "test/**" "tools/**" "amo/**"
 
       - name: Publish the GitHub Release
         if: steps.version.outputs.new == 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: gh release create "v$VERSION" dist/* --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes --latest
+        run: gh release create "v$VERSION" --target "$GITHUB_SHA" --title "v$VERSION" --generate-notes --latest

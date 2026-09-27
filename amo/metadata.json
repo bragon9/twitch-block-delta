@@ -1,0 +1,15 @@
+{
+  "summary": {
+    "en-US": "Blocks ads on Twitch live streams."
+  },
+  "description": {
+    "en-US": "Blocks ads on Twitch live streams in Firefox.\n\nPrivacy: Nothing is sent to the developer or anyone else. To get an ad-free stream, the extension uses your Twitch login only with Twitch itself.\n\nTurn off other Twitch ad blockers before using it.\n\nSource code: https://github.com/bragon9/twitch-block-delta"
+  },
+  "categories": [
+    "privacy-security"
+  ],
+  "version": {
+    "license": "GPL-3.0-only",
+    "approval_notes": "No build step: the submitted files are the source, unminified (github.com/bragon9/twitch-block-delta). The auth-token cookie from twitch.tv is read in src/probe.js (getTwitchOAuth) and sent only as the Authorization header to gql.twitch.tv to request a playback token. That token is used to fetch Twitch's own playlists (usher.ttvnw.net). No data leaves the browser except these requests to Twitch. For that reason, data_collection_permissions is \"none\". webRequestBlocking and filterResponseData rewrite Twitch media playlists in flight. \"downloads\" is only used when the user turns logging on, to save debug logs locally."
+  }
+}

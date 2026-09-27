@@ -6,12 +6,13 @@ and streams in background tabs behave exactly like visible ones.
 
 ## Install
 
-Download the `.xpi` from the
-[latest release](https://github.com/bragon9/twitch-block-delta/releases/latest)
-and drag it into Firefox (or Zen). It is signed by Mozilla for
-self-distribution, not listed on addons.mozilla.org, and updates itself from this
-repo's releases. To check for an update right away: `about:addons` → gear →
-**Check for Updates**.
+Install it from [addons.mozilla.org](https://addons.mozilla.org/firefox/search/?q=Twitch%20Block%20Delta)
+in Firefox (or Zen); Firefox keeps it up to date. Each
+[GitHub release](https://github.com/bragon9/twitch-block-delta/releases/latest)
+also carries the same signed `.xpi` once Mozilla has approved it. Copies
+installed from a release before 0.6.0 move to the addons.mozilla.org version on
+their next update check (`about:addons` → gear → **Check for Updates** to do it
+now).
 
 Disable other Twitch ad blockers (TTV AB, TTV LOL PRO) first. Refresh any open
 Twitch tabs after installing: the extension only knows a stream from its master
@@ -19,9 +20,10 @@ playlist, which a running player has already fetched.
 
 ## Using it
 
-The popup shows whether ads are being blocked and, for each Twitch tab, the
-channel, its state (live, ad replaced, ad showing, idle), the quality and the ad
-breaks seen. Everything else is under **Details & logging**: the mode, logging,
+The popup shows, for each Twitch tab, the channel, its state (live, ad
+replaced, ad showing, idle), the quality and the ad breaks seen. A banner
+appears only when something needs attention: an ad got through, or blocking is
+off (Observe only). Everything else is under **Details & logging**: the mode, logging,
 and each tab's rewrite details.
 
 ### Modes
@@ -149,14 +151,19 @@ changes through a pull request with passing checks.
 ### Releasing
 
 Bump `version` in `manifest.json` in a pull request and merge it. The Release
-workflow then signs that version with Mozilla as unlisted and publishes a GitHub
-Release with the `.xpi` and an `updates.json`, which installed copies check
-through the manifest's `update_url`. Merges that don't change the version
-release nothing.
+workflow then submits that version to addons.mozilla.org as a listed version,
+with the listing text from `amo/metadata.json`, and publishes a GitHub Release.
+Merges that don't change the version release nothing.
 
-Mozilla accepts each version number once. If a run fails before signing, re-run
-it from **Actions → Release → Run workflow**; if it fails after, bump the version
-again.
+Mozilla reviews each listed version before it can be downloaded. The **Attach
+AMO build** workflow checks hourly; once the version is approved it attaches the
+signed `.xpi` and an `updates.json` to the GitHub Release. That `updates.json`
+is what moves copies installed before 0.6.0 (which checked this repo's releases
+for updates) onto the addons.mozilla.org version.
+
+Mozilla accepts each version number once. If a run fails before submitting,
+re-run it from **Actions → Release → Run workflow**; if it fails after, bump the
+version again.
 
 The workflow needs the repository secrets `AMO_API_KEY` and `AMO_API_SECRET`
 (from https://addons.mozilla.org/developers/addon/api/key/).
