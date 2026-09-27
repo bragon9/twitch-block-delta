@@ -20,9 +20,10 @@ playlist, which a running player has already fetched.
 
 ## Using it
 
-The popup shows whether ads are being blocked and, for each Twitch tab, the
-channel, its state (live, ad replaced, ad showing, idle), the quality and the ad
-breaks seen. Everything else is under **Details & logging**: the mode, logging,
+The popup shows, for each Twitch tab, the channel, its state (live, ad
+replaced, ad showing, idle), the quality and the ad breaks seen. A banner
+appears only when something needs attention: an ad got through, or blocking is
+off (Observe only). Everything else is under **Details & logging**: the mode, logging,
 and each tab's rewrite details.
 
 ### Modes

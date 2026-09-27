@@ -58,20 +58,22 @@ function describeQuality(quality) {
   return /^(hev1|hvc1)/.test(quality.codecs ?? "") ? `${quality.name} HEVC` : quality.name;
 }
 
+// Only shown when something needs attention: blocking is off, or an ad got
+// through. Otherwise the tab cards say what's happening.
 function renderStatus(state) {
-  let text;
-  let tone;
+  let text = "";
+  let tone = "";
   if (state.mode === "observe") {
-    text = "Observe only: ads are not blocked";
+    text = "Ad blocking is off (Observe only)";
     tone = "warn";
-  } else if (state.tabs.length === 0) {
-    text = "Blocking ads. No Twitch streams open.";
-    tone = "";
   } else {
     const showing = state.tabs.filter((t) => tabState(t, state.mode).tone === "ad").length;
-    text = showing ? `An ad is showing in ${plural(showing, "tab")}` : `Blocking ads · ${plural(state.tabs.length, "stream")}`;
-    tone = showing ? "ad" : "ok";
+    if (showing) {
+      text = `An ad is showing in ${plural(showing, "tab")}`;
+      tone = "ad";
+    }
   }
+  statusEl.hidden = !text;
   statusEl.textContent = text;
   statusEl.className = `status ${tone}`;
 }
@@ -192,7 +194,8 @@ async function refresh() {
   const sorted = sortTabs(state.tabs, state.mode);
   const compact = sorted.length > MAX_CARDS;
   tabsEl.classList.toggle("compact", compact);
-  tabsEl.replaceChildren(...sorted.map((tab) => (compact ? renderRow : renderCard)(tab, state.mode)));
+  if (sorted.length === 0) tabsEl.replaceChildren(el("p", { className: "muted", textContent: "No Twitch streams open." }));
+  else tabsEl.replaceChildren(...sorted.map((tab) => (compact ? renderRow : renderCard)(tab, state.mode)));
 
   renderMode(state.mode);
   if (logModeEl.value !== state.logMode) logModeEl.value = state.logMode;
