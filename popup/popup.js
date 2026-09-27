@@ -76,6 +76,29 @@ function renderStatus(state) {
   statusEl.className = `status ${tone}`;
 }
 
+// Most urgent first: an ad the viewer can see, then ads being handled, live, idle.
+const TONE_ORDER = { ad: 0, ok: 1, idle: 2 };
+// Past this many tabs, cards become one-line rows so the popup stays short.
+const MAX_CARDS = 3;
+
+function sortTabs(tabs, mode) {
+  const rank = (tab) => {
+    const { tone } = tabState(tab, mode);
+    return TONE_ORDER[tone] * 2 + (tone === "ok" && !tab.adActive ? 1 : 0);
+  };
+  return [...tabs].sort((a, b) => rank(a) - rank(b) || (a.channel ?? "").localeCompare(b.channel ?? ""));
+}
+
+function renderRow(tab, mode) {
+  const { text, tone } = tabState(tab, mode);
+  return el("div", { className: `row-item ${tone === "ad" ? "ad" : ""}` }, [
+    el("span", { className: `dot ${tone}` }),
+    el("strong", { textContent: tab.channel ?? "(unknown channel)" }),
+    el("span", { className: "muted small", textContent: describeQuality(tab.quality) ?? "" }),
+    el("span", { className: `state ${tone}`, textContent: text }),
+  ]);
+}
+
 function renderCard(tab, mode) {
   const { text, tone } = tabState(tab, mode);
   const line = [describeQuality(tab.quality), tab.adBreaks ? plural(tab.adBreaks, "ad break") : null].filter(Boolean).join(" · ");
@@ -166,7 +189,10 @@ function logNote(state) {
 async function refresh() {
   const state = await browser.runtime.sendMessage({ type: "state" });
   renderStatus(state);
-  tabsEl.replaceChildren(...state.tabs.map((tab) => renderCard(tab, state.mode)));
+  const sorted = sortTabs(state.tabs, state.mode);
+  const compact = sorted.length > MAX_CARDS;
+  tabsEl.classList.toggle("compact", compact);
+  tabsEl.replaceChildren(...sorted.map((tab) => (compact ? renderRow : renderCard)(tab, state.mode)));
 
   renderMode(state.mode);
   if (logModeEl.value !== state.logMode) logModeEl.value = state.logMode;

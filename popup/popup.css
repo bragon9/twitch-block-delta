@@ -91,6 +91,33 @@ header strong {
 #tabs:empty {
   display: none;
 }
+/* Many tabs: one line each, scrolling inside the list so the status line and
+   Details stay put (Firefox caps popups at 600px). */
+#tabs.compact {
+  gap: 0;
+  max-height: 264px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.row-item {
+  display: grid;
+  grid-template-columns: 8px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+}
+.row-item + .row-item {
+  border-top: 1px solid var(--line);
+}
+.row-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.row-item.ad {
+  background: var(--ad-bg);
+}
 .card {
   padding: 10px 12px;
   border: 1px solid var(--line);
