@@ -19,8 +19,10 @@ playlist, which a running player has already fetched.
 
 ## Using it
 
-The popup shows each Twitch tab's state: the channel, rendition, ad breaks seen
-and the last rewrite.
+The popup shows whether ads are being blocked and, for each Twitch tab, the
+channel, its state (live, ad replaced, ad showing, idle), the quality and the ad
+breaks seen. Everything else is under **Details & logging**: the mode, logging,
+and each tab's rewrite details.
 
 ### Modes
 
@@ -31,7 +33,8 @@ and the last rewrite.
 
 ### Logging
 
-- **Problems only** (default): the last ~2 minutes of captures are kept in
+- **Off** (default): nothing is recorded and the `[delta]` console lines stop.
+- **Problems only**: the last ~2 minutes of captures are kept in
   memory only. If something goes wrong, they are saved with the ~15s after it to
   `Downloads/twitch-block-delta/problem-<time>.json`, with no prompt. Problems
   are:
@@ -46,13 +49,13 @@ and the last rewrite.
   recent** writes the buffer on demand.
 - **Always**: every capture is stored in extension storage, up to 150 MB, oldest
   first. **Export captures** saves them; **Clear** deletes them.
-- **Off**: nothing is recorded and the `[delta]` console lines stop.
 
 Logging only affects recording; blocking is the same in every setting.
 
 ## Reporting a problem
 
-Problem files are written automatically. For anything the extension didn't
+Open **Details & logging** and set logging to **Problems only** first; problem
+files are then written automatically. For anything the extension didn't
 notice, click **Save recent** within about two minutes, and note the time, the
 channel and what you saw. Worth reporting:
 
@@ -66,7 +69,7 @@ channel and what you saw. Worth reporting:
 For longer investigations, switch logging to **Always** and use **Export
 captures**. Every file also includes a timing log of each media playlist request
 (start, first byte, body done, forwarded to the player, status, errors, action),
-kept in memory for the last 20,000 requests.
+kept in memory for the last 20,000 requests while logging is on.
 
 Problem files hold full playlist text. **Always** exports store playlists as
 lossless deltas against the previous playlist of the same stream (about 12x
