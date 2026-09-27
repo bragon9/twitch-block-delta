@@ -4,11 +4,11 @@
 // in "observe" mode every byte passes through unchanged and ad breaks are probed.
 // What gets recorded depends on the log mode below.
 
-// "problems" (default): keep the last couple of minutes in memory and write a file
-// only when something goes wrong. "always": persist every capture to storage.
-// "off": record nothing.
-const LOG_MODES = ["problems", "always", "off"];
-let logMode = "problems";
+// "off" (default): record nothing. "problems": keep the last couple of minutes in
+// memory and write a file only when something goes wrong. "always": persist every
+// capture to storage.
+const LOG_MODES = ["off", "problems", "always"];
+let logMode = "off";
 const log = (...args) => logMode !== "off" && console.log("[delta]", ...args);
 
 const USHER_URLS = ["*://usher.ttvnw.net/api/*"];
@@ -42,6 +42,7 @@ function finishRequest(requestId, fields) {
   if (!record) return;
   Object.assign(record, fields(record));
   pendingRequests.delete(requestId);
+  if (logMode === "off") return;
   requestLog.push(record);
   if (requestLog.length > REQUEST_LOG_LIMIT) requestLog.splice(0, requestLog.length - REQUEST_LOG_LIMIT);
 }
@@ -145,6 +146,7 @@ async function writeDump(reasons) {
 function setLogMode(next) {
   if (!LOG_MODES.includes(next)) return;
   logMode = next;
+  if (logMode === "off") requestLog.length = 0;
   if (logMode !== "problems") {
     clearTimeout(pendingDump?.timer);
     pendingDump = null;
