@@ -317,8 +317,9 @@ async function observeMedia(details, text, variant, outcome) {
   const tab = getTab(details.tabId);
   if (!text.startsWith("#EXTM3U")) {
     await record({ kind: "invalid-response", tabId: details.tabId, channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length, head: text.slice(0, 200) });
-    // Empty bodies are aborted requests, not a problem.
-    if (text.length > 0) anomaly("invalid-response", { channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length });
+    // Empty bodies are aborted requests, and a stream that sent #EXT-X-ENDLIST
+    // 404s once it's gone. Neither is a problem.
+    if (text.length > 0 && !streams.get(details.url)?.ended) anomaly("invalid-response", { channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length });
     return;
   }
   // Secondary players and previews share the tab. Only playlists from the main
@@ -332,7 +333,7 @@ async function observeMedia(details, text, variant, outcome) {
   const analysis = analyzeMedia(text);
   const signature = playlistSignature(analysis);
   const previous = streams.get(details.url);
-  remember(streams, details.url, { signature, isAd: analysis.isAd, text });
+  remember(streams, details.url, { signature, isAd: analysis.isAd, ended: analysis.ended, text });
 
   const base = {
     tabId: details.tabId,

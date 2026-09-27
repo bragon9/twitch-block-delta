@@ -49,6 +49,7 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
   let pending = { pdt: null, extinf: null, discontinuity: false };
   let seenSegment = false;
   let seenAd = false;
+  let ended = false;
   // Anything between the last segment and the prefetch hints (a discontinuity,
   // a new init segment, an ad marker) means the hints point at what comes next,
   // which at an ad boundary is the ad itself.
@@ -114,6 +115,9 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
       case "#EXT-X-TWITCH-PREFETCH":
         prefetch.push(value);
         break;
+      case "#EXT-X-ENDLIST":
+        ended = true;
+        break;
       case "#EXT-X-DATERANGE":
         dateRanges.push(line);
         if (isAdDateRange(line)) changedAfterLastSegment = true;
@@ -123,7 +127,7 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
     }
   }
   const prefetchSafe = seenSegment && !changedAfterLastSegment;
-  return { header, dateRanges, segments, prefetch, prefetchSafe, mediaSequence, targetDuration };
+  return { header, dateRanges, segments, prefetch, prefetchSafe, mediaSequence, targetDuration, ended };
 }
 
 // Fills in live sequence numbers for page-playlist segments that have no tag,
@@ -213,10 +217,12 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
   // (like the start of an ad) sits between that segment and the hints.
   const tail = bySeq.get(window.at(-1));
   const tailSource = tail.source === "native" ? native : backup;
-  stats.prefetch = tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe ? tail.source : "dropped";
+  stats.prefetch = tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe && !native.ended ? tail.source : "dropped";
   if (stats.prefetch !== "dropped") {
     for (const url of tailSource.prefetch) out.push(`#EXT-X-TWITCH-PREFETCH:${url}`);
   }
+  // Without it the player keeps polling a finished stream until the URL 404s.
+  if (native.ended) out.push("#EXT-X-ENDLIST");
 
   return { text: `${out.join("\n")}\n`, stats };
 }

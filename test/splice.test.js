@@ -120,6 +120,26 @@ test("prefetch hints on a clean live playlist are kept", () => {
   eq(backup.prefetchSafe, true, "clean backup is safe");
 });
 
+test("the end of a stream is passed on to the player", () => {
+  // Real last playlist of a broadcast on a session spliced earlier. Dropping
+  // #EXT-X-ENDLIST kept the player polling until the playlist URL 404'd.
+  const ended = fixture("stream-ended-native");
+  eq(lib.analyzeMedia(ended).ended, true, "analysis");
+  eq(lib.analyzeMedia(ended).unknownTags, [], "known tag");
+  const { text, stats } = lib.spliceMediaPlaylist(ended, null, lib.newSpliceMemory());
+  assertCleanContinuous(text);
+  eq(stats.window, [6938, 6954], "window");
+  eq(text.trimEnd().split("\n").at(-1), "#EXT-X-ENDLIST", "last line");
+});
+
+test("a stream that has ended gets no prefetch hints", () => {
+  const ended = `${fixture("post-ad-native").trimEnd()}\n#EXT-X-ENDLIST\n`;
+  const { text, stats } = lib.spliceMediaPlaylist(ended, fixture("post-ad-backup"), lib.newSpliceMemory());
+  eq(text.includes("#EXT-X-TWITCH-PREFETCH"), false, "no prefetch in output");
+  eq(stats.prefetch, "dropped", "stats");
+  eq(text.trimEnd().split("\n").at(-1), "#EXT-X-ENDLIST", "last line");
+});
+
 test("no backup and no live segments yields nothing to splice", () => {
   const { text } = lib.spliceMediaPlaylist(fixture("mid-ad-native"), null, lib.newSpliceMemory());
   eq(text, null, "text");

@@ -22,6 +22,8 @@ const KNOWN_MEDIA_TAGS = new Set([
   "#EXT-X-TWITCH-PREFETCH",
   "#EXT-X-DISCONTINUITY",
   "#EXT-X-INDEPENDENT-SEGMENTS",
+  // The broadcast is over; the playlist URL 404s shortly after.
+  "#EXT-X-ENDLIST",
 ]);
 
 // Matches "twitch-stitched-ad", "stitched-ad-123", "twitch-maf-ad", but not the
@@ -98,6 +100,7 @@ function analyzeMedia(text) {
     adDateRanges: [],
     unknownTags: [],
     adReasons: [],
+    ended: false,
     // "stitched": ad video is in the playlist. "client": only an ad marker; the
     // live segments continue and Twitch's page is expected to render the ad.
     adKind: null,
@@ -121,6 +124,7 @@ function analyzeMedia(text) {
     if (!line.startsWith("#")) continue;
     const [tag, value] = splitTag(line);
     if (!KNOWN_MEDIA_TAGS.has(tag)) unknownTags.add(tag);
+    if (tag === "#EXT-X-ENDLIST") result.ended = true;
     if (/SCTE35|CUE-OUT|CUE-IN/.test(line)) {
       reasons.add(`cue tag ${tag}`);
       stitched = true;
@@ -216,6 +220,7 @@ function playlistSignature(analysis) {
     analysis.unknownTags,
     analysis.discontinuities > 0,
     analysis.adKind,
+    analysis.ended,
   ]);
 }
 
