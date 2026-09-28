@@ -36,9 +36,13 @@
       "src/ring.js",
       "src/probe.js",
       "src/blocker.js",
+      "src/session.js",
       "src/background.js"
     ],
     "persistent": true
+  },
+  "options_ui": {
+    "page": "options/options.html"
   },
   "browser_action": {
     "default_icon": "icons/icon.svg",

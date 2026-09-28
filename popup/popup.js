@@ -1,25 +1,14 @@
 "use strict";
 
 const statusEl = document.getElementById("status");
-const tabsEl = document.getElementById("tabs");
-const tabDetailsEl = document.getElementById("tab-details");
-const summaryEl = document.getElementById("summary");
-const detailsEl = document.getElementById("details");
+const streamEl = document.getElementById("stream");
+const tabDetailEl = document.getElementById("tab-detail");
 document.getElementById("version").textContent = `v${browser.runtime.getManifest().version}`;
 
 // A tab whose player hasn't fetched a playlist for this long is paused or gone.
 const IDLE_MS = 15_000;
-// Actions that keep an ad out of the player's view (see blocker.js).
-const CLEAN_AD_ACTIONS = new Set(["splice", "drop-ad", "strip-markers"]);
 
-try {
-  detailsEl.open = localStorage.getItem("detailsOpen") === "1";
-} catch {}
-detailsEl.addEventListener("toggle", () => {
-  try {
-    localStorage.setItem("detailsOpen", detailsEl.open ? "1" : "0");
-  } catch {}
-});
+let tabId = null;
 
 function el(tag, props = {}, children = []) {
   const node = Object.assign(document.createElement(tag), props);
@@ -37,81 +26,91 @@ function plural(n, word) {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
 
-// What the viewer would see in this tab right now: { text, tone } where tone is
-// "ok", "ad" or "idle".
-function tabState(tab, mode) {
+function duration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+// What the viewer sees in this tab right now: { text, tone } where tone is
+// "ok", "ad", "warn" or "idle".
+function streamState(tab, mode) {
+  if (!tab.lastMediaAt || Date.now() - tab.lastMediaAt > IDLE_MS) return { text: "Paused", tone: "idle" };
   if (tab.adActive) {
-    if (mode === "observe") return { text: "Ad (observe only)", tone: "ad" };
+    if (mode === "observe") return { text: "Ad (Observe only)", tone: "ad" };
+    if (tab.loadedAllowed) return { text: "Ad playing (allowed)", tone: "idle" };
     const action = tab.lastBlock?.action;
-    if (CLEAN_AD_ACTIONS.has(action) && !tab.lastBlock.error) {
-      return { text: action === "strip-markers" ? "Ad blocked" : "Ad replaced", tone: "ok" };
-    }
-    if (action === "strip-ad") return { text: "Waiting for live", tone: "ad" };
-    return { text: "Ad showing", tone: "ad" };
+    if (action === "fallback-native") return { text: "Ad showing", tone: "ad" };
+    if (action === "strip-ad") return { text: "Waiting for live", tone: "warn" };
+    return { text: "Ad blocked", tone: "ok" };
   }
-  if (!tab.lastMediaAt || Date.now() - tab.lastMediaAt > IDLE_MS) return { text: "Idle", tone: "idle" };
-  return { text: "Live", tone: "ok" };
+  if (mode === "observe") return { text: "Observe only", tone: "idle" };
+  if (tab.loadedAllowed) return { text: "Ads allowed", tone: "idle" };
+  return { text: "Blocking ads", tone: "ok" };
 }
 
-function describeQuality(quality) {
-  if (!quality) return null;
-  return /^(hev1|hvc1)/.test(quality.codecs ?? "") ? `${quality.name} HEVC` : quality.name;
+function sessionLine(s) {
+  const percent = s.watchedMs > 0 ? Math.round((s.adMs / s.watchedMs) * 100) : 0;
+  return `This session: ${duration(s.watchedMs)} · Ads ${duration(s.adMs)} (${percent}%)`;
 }
 
-// Only shown when something needs attention: blocking is off, or an ad got
-// through. Otherwise the tab cards say what's happening.
+function breaksLine(s) {
+  if (s.breaks === 0) return [el("span", { textContent: "No ads yet" })];
+  if (s.blocked === s.breaks) return [el("span", { textContent: `${plural(s.breaks, "ad break")}, all blocked` })];
+  if (s.shown === s.breaks) return [el("span", { textContent: `${plural(s.breaks, "ad break")}, all allowed` })];
+  const parts = [
+    s.blocked && el("span", { textContent: `${s.blocked} blocked` }),
+    s.leaked && el("span", { className: "state ad", textContent: `${s.leaked} got through` }),
+    s.shown && el("span", { textContent: `${s.shown} allowed` }),
+  ].filter(Boolean);
+  return [`${plural(s.breaks, "ad break")}: `, ...parts.flatMap((p, i) => (i ? [", ", p] : [p]))];
+}
+
+function allowToggle(state) {
+  const { channel, loadedAllowed } = state.tab;
+  const allowed = state.allowedChannels.includes(channel);
+  const box = el("input", { type: "checkbox", checked: allowed });
+  box.addEventListener("change", async () => {
+    box.disabled = true;
+    await browser.runtime.sendMessage({ type: "setAllowed", channel, allowed: box.checked });
+    // Blocking is decided when the stream loads, so reload it to apply.
+    await browser.tabs.reload(tabId);
+    window.close();
+  });
+  const children = [el("label", { className: "toggle" }, [box, " Don't block ads on this channel"])];
+  if (allowed !== loadedAllowed) children.push(el("p", { className: "muted small", textContent: "Applies when the page reloads." }));
+  return children;
+}
+
+// Only shown when blocking is off everywhere; everything else is on the card.
 function renderStatus(state) {
-  let text = "";
-  let tone = "";
-  if (state.mode === "observe") {
-    text = "Ad blocking is off (Observe only)";
-    tone = "warn";
-  } else {
-    const showing = state.tabs.filter((t) => tabState(t, state.mode).tone === "ad").length;
-    if (showing) {
-      text = `An ad is showing in ${plural(showing, "tab")}`;
-      tone = "ad";
-    }
+  statusEl.hidden = state.mode !== "observe";
+  statusEl.textContent = "Ad blocking is off (Observe only in Settings)";
+  statusEl.className = "status warn";
+}
+
+function renderStream(state) {
+  const tab = state.tab;
+  if (!tab?.channel || !tab.lastMediaAt) {
+    streamEl.className = "card";
+    streamEl.replaceChildren(el("p", { className: "muted", textContent: "No Twitch stream playing in this tab." }));
+    return;
   }
-  statusEl.hidden = !text;
-  statusEl.textContent = text;
-  statusEl.className = `status ${tone}`;
-}
-
-// Most urgent first: an ad the viewer can see, then ads being handled, live, idle.
-const TONE_ORDER = { ad: 0, ok: 1, idle: 2 };
-// Past this many tabs, cards become one-line rows so the popup stays short.
-const MAX_CARDS = 3;
-
-function sortTabs(tabs, mode) {
-  const rank = (tab) => {
-    const { tone } = tabState(tab, mode);
-    return TONE_ORDER[tone] * 2 + (tone === "ok" && !tab.adActive ? 1 : 0);
-  };
-  return [...tabs].sort((a, b) => rank(a) - rank(b) || (a.channel ?? "").localeCompare(b.channel ?? ""));
-}
-
-function renderRow(tab, mode) {
-  const { text, tone } = tabState(tab, mode);
-  return el("div", { className: `row-item ${tone === "ad" ? "ad" : ""}` }, [
-    el("span", { className: `dot ${tone}` }),
-    el("strong", { textContent: tab.channel ?? "(unknown channel)" }),
-    el("span", { className: "muted small", textContent: describeQuality(tab.quality) ?? "" }),
-    el("span", { className: `state ${tone}`, textContent: text }),
-  ]);
-}
-
-function renderCard(tab, mode) {
-  const { text, tone } = tabState(tab, mode);
-  const line = [describeQuality(tab.quality), tab.adBreaks ? plural(tab.adBreaks, "ad break") : null].filter(Boolean).join(" · ");
-  return el("section", { className: `card ${tone === "ad" ? "ad" : ""}` }, [
+  const { text, tone } = streamState(tab, state.mode);
+  const s = tab.session;
+  const children = [
     el("div", { className: "card-head" }, [
       el("span", { className: `dot ${tone}` }),
-      el("strong", { textContent: tab.channel ?? "(unknown channel)" }),
+      el("strong", { textContent: tab.channel }),
       el("span", { className: `state ${tone}`, textContent: text }),
     ]),
-    ...(line ? [el("div", { className: "muted", textContent: line })] : []),
-  ]);
+    el("div", { className: "stats" }, [el("div", { textContent: sessionLine(s) }), el("div", {}, breaksLine(s))]),
+  ];
+  if (s.leaked > 0) children.push(el("button", { className: "report", textContent: "Report a problem", onclick: report }));
+  children.push(...allowToggle(state));
+  streamEl.className = `card ${tone === "ad" ? "ad" : ""}`;
+  streamEl.replaceChildren(...children);
 }
 
 function probeTable(probe) {
@@ -134,13 +133,14 @@ function probeTable(probe) {
 }
 
 function renderTabDetail(tab) {
+  if (!tab) return [el("p", { className: "muted small", textContent: "Nothing recorded for this tab." })];
   const fields = [
+    ["Tab", String(tab.tabId)],
     ["Player type", tab.playerType ?? "?"],
     ["Rendition", tab.quality ? `${tab.quality.name} (${tab.quality.codecs})` : "?"],
     ["Top rendition", tab.topVariant ? `${tab.topVariant.name} (${tab.topVariant.codecs})` : "?"],
     ["Playlists", `${tab.mediaResponses} (last ${ago(tab.lastMediaAt)})`],
     ["Request types", tab.requestTypes.join(", ") || "?"],
-    ["Ad breaks", String(tab.adBreaks)],
   ];
   if (tab.adActive) fields.push(["Ad kind", tab.adKind]);
   if (tab.lastAdReasons.length) fields.push(["Last ad signal", tab.lastAdReasons.join("; ")]);
@@ -153,80 +153,32 @@ function renderTabDetail(tab) {
     fields.push(["Rewrite delay", `last ${tab.lastBlock.rewriteMs} ms · max ${tab.maxRewriteMs} ms`]);
     if (tab.lastBlock.error) fields.push(["Last problem", tab.lastBlock.error]);
   }
-  return el("section", { className: "tab-detail" }, [
-    el("h2", {}, [el("span", { textContent: tab.channel ?? "(unknown)" }), el("span", { className: "muted small", textContent: `tab ${tab.tabId}` })]),
+  return [
     el("dl", {}, fields.flatMap(([k, v]) => [el("dt", { textContent: k }), el("dd", { textContent: v })])),
     ...(tab.lastProbe ? [probeTable(tab.lastProbe)] : []),
-  ]);
+  ];
 }
 
-function renderMode(mode) {
-  for (const name of ["block", "observe"]) {
-    document.getElementById(`mode-${name}`).setAttribute("aria-checked", String(mode === name));
-  }
+async function report() {
+  await browser.runtime.sendMessage({ type: "report", tabId });
+  window.close();
 }
 
-for (const name of ["block", "observe"]) {
-  document.getElementById(`mode-${name}`).addEventListener("click", async () => {
-    await browser.runtime.sendMessage({ type: "setMode", mode: name });
-    refresh();
-  });
-}
-
-const logModeEl = document.getElementById("log-mode");
-const logNoteEl = document.getElementById("log-note");
-logModeEl.addEventListener("change", async () => {
-  await browser.runtime.sendMessage({ type: "setLogMode", logMode: logModeEl.value });
-  refresh();
+document.getElementById("report").addEventListener("click", report);
+document.getElementById("settings").addEventListener("click", async () => {
+  await browser.runtime.openOptionsPage();
+  window.close();
 });
-
-function logNote(state) {
-  if (state.logMode === "off") return "Nothing is recorded.";
-  if (state.logMode === "always") return "Recording every capture to extension storage.";
-  const last = state.lastDump;
-  const lastText = !last ? "" : last.error ? ` Last save failed: ${last.error}` : ` Last file: ${ago(last.at)} (${last.reasons.join(", ")}).`;
-  return `Watching in memory (${state.ring.count} entries). A file goes to Downloads/twitch-block-delta/ if something goes wrong.${lastText}`;
-}
 
 async function refresh() {
-  const state = await browser.runtime.sendMessage({ type: "state" });
+  const state = await browser.runtime.sendMessage({ type: "state", tabId });
   renderStatus(state);
-  const sorted = sortTabs(state.tabs, state.mode);
-  const compact = sorted.length > MAX_CARDS;
-  tabsEl.classList.toggle("compact", compact);
-  if (sorted.length === 0) tabsEl.replaceChildren(el("p", { className: "muted", textContent: "No Twitch streams open." }));
-  else tabsEl.replaceChildren(...sorted.map((tab) => (compact ? renderRow : renderCard)(tab, state.mode)));
-
-  renderMode(state.mode);
-  if (logModeEl.value !== state.logMode) logModeEl.value = state.logMode;
-  logNoteEl.textContent = logNote(state);
-  tabDetailsEl.replaceChildren(...state.tabs.map(renderTabDetail));
-  // Stored captures only exist after "Always" logging; the in-memory buffer only
-  // fills in "Problems only".
-  const hasCaptures = state.logMode === "always" || state.captures > 0;
-  const mb = (n) => (n / 1024 / 1024).toFixed(1);
-  summaryEl.hidden = !hasCaptures;
-  summaryEl.textContent = `${state.captures} captures · ${mb(state.storage.bytes)} of ${mb(state.storage.maxBytes)} MB`;
-  document.getElementById("export").hidden = !hasCaptures;
-  document.getElementById("clear").hidden = !hasCaptures;
-  document.getElementById("dump").hidden = state.logMode !== "problems";
-  document.querySelector(".actions").hidden = !hasCaptures && state.logMode !== "problems";
+  renderStream(state);
+  tabDetailEl.replaceChildren(...renderTabDetail(state.tab));
 }
 
-document.getElementById("export").addEventListener("click", async () => {
-  const { exported } = await browser.runtime.sendMessage({ type: "export" });
-  summaryEl.textContent = `Exported ${exported} captures.`;
-});
-
-document.getElementById("dump").addEventListener("click", async () => {
-  const { entries } = await browser.runtime.sendMessage({ type: "dumpNow" });
-  logNoteEl.textContent = `Saved the last ${entries} recent entries.`;
-});
-
-document.getElementById("clear").addEventListener("click", async () => {
-  await browser.runtime.sendMessage({ type: "clear" });
+browser.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+  tabId = tab?.id ?? null;
   refresh();
+  setInterval(refresh, 2000);
 });
-
-refresh();
-setInterval(refresh, 2000);

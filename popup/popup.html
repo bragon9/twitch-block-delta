@@ -9,35 +9,22 @@
       <img src="../icons/icon.svg" width="28" height="28" alt="" />
       <strong>Twitch Block Delta</strong>
       <span id="version" class="muted"></span>
+      <button id="settings" class="icon-button" title="Settings" aria-label="Settings">
+        <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+          <path
+            fill="currentColor"
+            d="M6.9.5h2.2l.4 2a5.5 5.5 0 0 1 1.3.75l1.9-.7 1.1 1.9-1.55 1.3a5.6 5.6 0 0 1 0 1.5l1.55 1.3-1.1 1.9-1.9-.7a5.5 5.5 0 0 1-1.3.75l-.4 2H6.9l-.4-2a5.5 5.5 0 0 1-1.3-.75l-1.9.7-1.1-1.9 1.55-1.3a5.6 5.6 0 0 1 0-1.5L2.2 4.45l1.1-1.9 1.9.7a5.5 5.5 0 0 1 1.3-.75zM8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"
+          />
+        </svg>
+      </button>
     </header>
     <div id="status" class="status" hidden></div>
-    <div id="tabs"></div>
-    <details id="details">
-      <summary>Details &amp; logging</summary>
-      <div class="field">
-        <span class="label" id="mode-label">Mode</span>
-        <div class="mode" role="radiogroup" aria-labelledby="mode-label">
-          <button id="mode-block" role="radio">Block</button>
-          <button id="mode-observe" role="radio">Observe only</button>
-        </div>
-      </div>
-      <div class="field">
-        <div class="row">
-          <label class="label" for="log-mode">Logging</label>
-          <select id="log-mode">
-            <option value="off">Off</option>
-            <option value="problems">Problems only</option>
-            <option value="always">Always</option>
-          </select>
-        </div>
-        <p id="log-note" class="muted small"></p>
-      </div>
-      <div id="tab-details"></div>
-      <p id="summary" class="muted small"></p>
+    <section id="stream" class="card"></section>
+    <details id="troubleshooting">
+      <summary>Troubleshooting</summary>
+      <div id="tab-detail" class="scroll"></div>
       <div class="actions">
-        <button id="dump" class="primary">Save recent</button>
-        <button id="export">Export captures</button>
-        <button id="clear">Clear</button>
+        <button id="report">Report a problem</button>
       </div>
     </details>
     <script src="popup.js"></script>
