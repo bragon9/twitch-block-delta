@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="../popup/popup.css" />
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <section>
+      <h2>Allowed channels</h2>
+      <p class="muted">Ads play normally on these channels. The list syncs through your Firefox account.</p>
+      <ul id="allowed"></ul>
+      <form id="add" class="add">
+        <input id="add-name" type="text" placeholder="Channel name" aria-label="Channel name" autocomplete="off" />
+        <button type="submit">Add</button>
+      </form>
+      <p id="add-error" class="state ad" hidden></p>
+    </section>
+
+    <section>
+      <h2 id="mode-label">Ad blocking</h2>
+      <div class="mode" role="radiogroup" aria-labelledby="mode-label">
+        <button id="mode-block" role="radio">Block</button>
+        <button id="mode-observe" role="radio">Observe only</button>
+      </div>
+      <p class="muted small">Observe only lets every ad through and probes other player types during ads. It's for capturing ad data.</p>
+    </section>
+
+    <section>
+      <div class="row">
+        <h2><label for="log-mode">Logging</label></h2>
+        <select id="log-mode">
+          <option value="off">Off</option>
+          <option value="problems">Problems only</option>
+          <option value="always">Always</option>
+        </select>
+      </div>
+      <p id="log-note" class="muted small"></p>
+      <p id="summary" class="muted small"></p>
+      <div class="actions">
+        <button id="dump" class="primary">Save recent</button>
+        <button id="export">Export captures</button>
+        <button id="clear">Clear</button>
+      </div>
+    </section>
+    <script src="options.js"></script>
+  </body>
+</html>

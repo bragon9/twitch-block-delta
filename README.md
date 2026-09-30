@@ -20,16 +20,31 @@ playlist, which a running player has already fetched.
 
 ## Using it
 
-The popup shows, for each Twitch tab, the channel, its state (live, ad
-replaced, ad showing, idle), the quality and the ad breaks seen. A banner
-appears only when something needs attention: an ad got through, or blocking is
-off (Observe only). Everything else is under **Details & logging**: the mode, logging,
-and each tab's rewrite details.
+The popup is about the tab you open it from. It shows the channel, what's
+happening right now (blocking ads, ad blocked, ad showing, paused), and this
+session's numbers: how long you've watched, how much of that was ads, and what
+happened to each ad break. A session starts over when the page reloads, the tab
+switches channels, or the tab closes; nothing is saved. If an ad got through,
+**Report a problem** opens a pre-filled GitHub issue for you to review.
+
+**Troubleshooting** at the bottom shows this tab's rewrite details.
+
+The gear opens **Settings** (also in `about:addons`), which holds the allowed
+channels, the blocking mode and logging.
+
+### Allowed channels
+
+**Don't block ads on this channel** in the popup lets ads play normally on that
+channel, for example to support the streamer. The page reloads to apply it,
+since blocking is decided when a stream loads. Settings lists every allowed
+channel, where you can remove them or add more. The list syncs through your
+Firefox account.
 
 ### Modes
 
 - **Block** (default): rewrites playlists. During an ad the badge is green when
-  the ad is being replaced cleanly, red when it isn't.
+  the ad is kept from the player, red when it isn't, and grey on an allowed
+  channel.
 - **Observe only**: passes everything through unchanged and probes other player
   types during ads. Use it to capture raw ad data.
 
@@ -56,7 +71,7 @@ Logging only affects recording; blocking is the same in every setting.
 
 ## Reporting a problem
 
-Open **Details & logging** and set logging to **Problems only** first; problem
+In **Settings**, set logging to **Problems only** first; problem
 files are then written automatically. For anything the extension didn't
 notice, click **Save recent** within about two minutes, and note the time, the
 channel and what you saw. Worth reporting:
@@ -92,7 +107,9 @@ tokens. Don't post them publicly.
 The extension sends nothing anywhere except Twitch. To fetch an ad-free backup
 playlist it reads your Twitch login cookie and uses it only with Twitch's own
 API (`gql.twitch.tv`). Logs stay on your computer, in extension storage or your
-Downloads folder.
+Downloads folder. The allowed-channel list is stored with Firefox's own settings
+sync, if you use it. **Report a problem** only opens a GitHub page for you to
+review; nothing is sent unless you submit it.
 
 ## How it works
 
@@ -118,6 +135,7 @@ segments from two sessions).
 | `src/splice.js` | Pure splicing logic, tested against real playlists |
 | `src/blocker.js` | Fetches the backup session and rewrites media playlists |
 | `src/background.js` | Wires it into `webRequest.filterResponseData`; logging |
+| `src/session.js` | Per-tab session stats shown in the popup |
 | `src/playlist.js` | Playlist parsing and ad detection |
 | `src/probe.js` | Twitch API calls; ad-break probes in Observe mode |
 | `src/capture.js`, `src/delta.js` | Persistent capture storage (Always) |

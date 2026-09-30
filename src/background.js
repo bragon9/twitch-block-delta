@@ -32,6 +32,8 @@ const streams = new Map();
 // tabId -> observation state shown in the popup.
 const tabs = new Map();
 let mode = "block";
+// Channels whose ads play normally, synced through the user's Firefox account.
+let allowedChannels = new Set();
 // Timing of every media playlist request, kept in memory and added to exports.
 // Shows whether a stall came from Twitch, an aborted request, or our rewriting.
 const requestLog = [];
@@ -59,32 +61,39 @@ function remember(map, key, value) {
   if (map.size > MAX_TRACKED_URLS) map.delete(map.keys().next().value);
 }
 
+// Everything that starts over with a new session in the tab.
+function sessionFields() {
+  return {
+    session: Session.create(Date.now()),
+    masters: 0,
+    mediaResponses: 0,
+    lastMasterAt: null,
+    lastMediaAt: null,
+    requestTypes: [],
+    adActive: false,
+    adKind: null,
+    adStartedAt: null,
+    lastAdReasons: [],
+    lastProbe: null,
+    lastAction: null,
+    lastBlock: null,
+    actionCounts: {},
+    maxRewriteMs: 0,
+  };
+}
+
 function getTab(tabId) {
   if (!tabs.has(tabId)) {
-    tabs.set(tabId, {
-      tabId,
-      channel: null,
-      playerType: null,
-      quality: null,
-      topVariant: null,
-      masters: 0,
-      mediaResponses: 0,
-      lastMasterAt: null,
-      lastMediaAt: null,
-      requestTypes: [],
-      adActive: false,
-      adKind: null,
-      adStartedAt: null,
-      adBreaks: 0,
-      lastAdReasons: [],
-      lastProbe: null,
-      lastAction: null,
-      lastBlock: null,
-      actionCounts: {},
-      usherParams: null,
-    });
+    tabs.set(tabId, { tabId, channel: null, playerType: null, quality: null, topVariant: null, usherParams: null, ...sessionFields() });
   }
   return tabs.get(tabId);
+}
+
+// Keeps the channel and usher parameters: a new page's master playlist can
+// arrive before the event that triggered this, and blocking needs them.
+function resetSession(tab) {
+  if (tab.adActive) setBadge(tab.tabId, "");
+  Object.assign(tab, sessionFields());
 }
 
 const POST_PROBLEM_MS = 15_000;
@@ -124,7 +133,7 @@ async function flushDump() {
   lastDumpAt = Date.now();
   dumpCount++;
   try {
-    lastDump = { at: Date.now(), reasons, entries: await writeDump(reasons) };
+    lastDump = { at: Date.now(), reasons, entries: (await writeDump(reasons)).entries };
   } catch (err) {
     lastDump = { at: Date.now(), reasons, error: String(err?.message || err) };
     console.error("[delta] problem dump failed", err);
@@ -135,12 +144,13 @@ async function writeDump(reasons) {
   const entries = Ring.snapshot();
   const since = entries.length > 0 ? Date.parse(entries[0].at) : Date.now();
   const requests = [...requestLog, ...pendingRequests.values()].filter((r) => r.at >= since);
+  const filename = `twitch-block-delta/problem-${fileStamp()}.json`;
   await saveJson(
     { exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, encoding: EXPORT_ENCODING, reasons, requests, entries },
-    `twitch-block-delta/problem-${fileStamp()}.json`,
+    filename,
     false,
   );
-  return entries.length;
+  return { entries: entries.length, filename };
 }
 
 function setLogMode(next) {
@@ -239,6 +249,7 @@ async function describeTab(tabId) {
 
 const BADGE_RED = "#c0392b";
 const BADGE_GREEN = "#1e8449";
+const BADGE_GREY = "#6b6b75";
 
 function setBadge(tabId, text, color = BADGE_RED) {
   if (tabId < 0) return;
@@ -253,6 +264,7 @@ async function onMaster(details, text) {
   const isSecondary = SECONDARY_PLAYER_TYPES.has(playerType);
   const tab = getTab(details.tabId);
   if (!isSecondary) {
+    if (tab.channel && tab.channel !== channel) resetSession(tab);
     tab.channel = channel;
     tab.playerType = playerType;
     tab.usherParams = params;
@@ -272,6 +284,9 @@ async function onMaster(details, text) {
       stableId: v.stableId,
       resolution: v.resolution,
       codecs: v.codecs,
+      // Decided per playback session: switching between blocking and not
+      // mid-stream would break the renumbered sequence the player is following.
+      allowed: allowedChannels.has(channel),
     });
   }
 
@@ -295,7 +310,7 @@ async function onMaster(details, text) {
 async function onMedia(details, text, record) {
   const variant = variants.get(details.url) ?? null;
   let outcome = null;
-  if (mode === "block") {
+  if (mode === "block" && !variant?.allowed) {
     const started = performance.now();
     outcome = await rewriteMediaPlaylist(details.url, text, variant, getTab(details.tabId).usherParams);
     outcome.rewriteMs = Math.round(performance.now() - started);
@@ -333,6 +348,7 @@ async function observeMedia(details, text, variant, outcome) {
   if (!tab.requestTypes.includes(details.type)) tab.requestTypes.push(details.type);
 
   const analysis = analyzeMedia(text);
+  if (isPageStream) Session.beat(tab.session, tab.lastMediaAt, analysis.isAd);
   const signature = playlistSignature(analysis);
   const previous = streams.get(details.url);
   remember(streams, details.url, { signature, isAd: analysis.isAd, ended: analysis.ended, text });
@@ -400,20 +416,25 @@ async function observeMedia(details, text, variant, outcome) {
   if (isPageStream) await updateAdState(tab, analysis, outcome);
 }
 
-// Green while an ad is being replaced cleanly, red when the player can see it or
-// is waiting on it.
-function badgeFor(analysis, outcome) {
-  if (!outcome) return { text: BADGE_BY_AD_KIND[analysis.adKind], color: BADGE_RED };
-  const clean = ["splice", "drop-ad", "strip-markers"].includes(outcome.action);
-  return { text: BADGE_BY_AD_KIND[analysis.adKind], color: clean && !outcome.error ? BADGE_GREEN : BADGE_RED };
+// What the viewer got from this ad playlist. With no rewrite (Observe only, or an
+// allowed channel) the ad was let through on purpose. Every rewrite keeps the ad
+// out of the player except fallback-native, which had nothing live to serve;
+// strip-ad leaves the player waiting at the live edge, but still shows no ad.
+function adVerdict(outcome) {
+  if (!outcome) return "shown";
+  return outcome.action === "fallback-native" ? "leaked" : "blocked";
 }
 
 const BADGE_BY_AD_KIND = { stitched: "AD", client: "MAF" };
+const BADGE_COLOR_BY_VERDICT = { blocked: BADGE_GREEN, shown: BADGE_GREY, leaked: BADGE_RED };
 
 async function updateAdState(tab, analysis, outcome) {
   if (analysis.isAd) {
-    const badge = badgeFor(analysis, outcome);
-    setBadge(tab.tabId, badge.text, badge.color);
+    const verdict = adVerdict(outcome);
+    // Observe only is for studying ads, so an ad there is flagged like a leak.
+    const color = verdict === "shown" && mode === "observe" ? BADGE_RED : BADGE_COLOR_BY_VERDICT[verdict];
+    setBadge(tab.tabId, BADGE_BY_AD_KIND[analysis.adKind], color);
+    if (tab.adActive) Session.adUpdate(tab.session, verdict);
   }
   if (analysis.adKind === tab.adKind) return;
   const now = Date.now();
@@ -424,7 +445,7 @@ async function updateAdState(tab, analysis, outcome) {
     tab.adActive = true;
     tab.adKind = analysis.adKind;
     tab.adStartedAt = now;
-    if (!escalated) tab.adBreaks++;
+    if (!escalated) Session.adStart(tab.session, adVerdict(outcome));
     tab.lastAdReasons = analysis.adReasons;
     log(`ad start (${analysis.adKind}) ${tab.channel} tab=${tab.tabId}:`, analysis.adReasons.join("; "));
     await record({
@@ -448,6 +469,7 @@ async function updateAdState(tab, analysis, outcome) {
     const endedKind = tab.adKind;
     tab.adActive = false;
     tab.adKind = null;
+    Session.adEnd(tab.session);
     setBadge(tab.tabId, "");
     log(`ad end ${tab.channel} tab=${tab.tabId} after ${Math.round(durationMs / 1000)}s`);
     await record({ kind: "event", event: "ad-end", adKind: endedKind, tabId: tab.tabId, channel: tab.channel, durationMs, tabInfo });
@@ -509,6 +531,13 @@ browser.webRequest.onErrorOccurred.addListener(
 );
 
 browser.tabs.onRemoved.addListener((tabId) => tabs.delete(tabId));
+// A reload or a new page in the tab starts a new session.
+browser.tabs.onUpdated.addListener(
+  (tabId, info) => {
+    if (info.status === "loading" && tabs.has(tabId)) resetSession(tabs.get(tabId));
+  },
+  { properties: ["status"] },
+);
 
 function fileStamp() {
   return new Date().toISOString().replace(/[:.]/g, "-");
@@ -540,16 +569,19 @@ async function exportCaptures() {
 
 browser.runtime.onMessage.addListener(async (message) => {
   switch (message?.type) {
-    case "state":
+    case "state": {
+      const tab = tabs.get(message.tabId);
       return {
         mode,
         logMode,
+        allowedChannels: [...allowedChannels].sort(),
         ring: { count: Ring.items.length, bytes: Ring.bytes },
         lastDump,
         captures: await Capture.count(),
         storage: await Capture.stats(),
-        tabs: [...tabs.values()].map(({ usherParams, ...rest }) => rest),
+        tab: tab ? tabSnapshot(tab) : null,
       };
+    }
     case "export":
       return { exported: await exportCaptures() };
     case "clear":
@@ -568,11 +600,84 @@ browser.runtime.onMessage.addListener(async (message) => {
       return { logMode };
     case "dumpNow":
       if (logMode !== "problems") return { entries: 0 };
-      return { entries: await writeDump(["manual"]) };
+      return { entries: (await writeDump(["manual"])).entries };
+    case "report":
+      await openReport(message.tabId);
+      return {};
+    case "setAllowed":
+      await setAllowed(message.channel, message.allowed);
+      return { allowed: allowedChannels.has(message.channel) };
   }
 });
 
-Promise.all([Capture.load(), browser.storage.local.get(["mode", "logMode"])]).then(([, stored]) => {
+function tabSnapshot({ usherParams, ...rest }) {
+  // Blocking follows the setting from when the stream loaded (see onMaster).
+  const loadedAllowed = [...variants.values()].findLast((v) => v.channel === rest.channel && v.playerType === rest.playerType)?.allowed ?? false;
+  return { ...rest, loadedAllowed };
+}
+
+async function setAllowed(channel, allowed) {
+  if (typeof channel !== "string" || !channel) return;
+  const next = new Set(allowedChannels);
+  if (allowed) next.add(channel.toLowerCase());
+  else next.delete(channel.toLowerCase());
+  allowedChannels = next;
+  await browser.storage.sync.set({ allowedChannels: [...next].sort() });
+}
+
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === "sync" && changes.allowedChannels) allowedChannels = new Set(changes.allowedChannels.newValue ?? []);
+});
+
+function formatDuration(ms) {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+// Opens a new GitHub issue filled in with what the extension knows. The user
+// reviews it before anything is posted. In "problems" logging the recent buffer
+// is saved too, but it holds signed URLs and the user's Twitch ID, so the issue
+// asks them not to attach it publicly.
+async function openReport(tabId) {
+  const tab = tabs.get(tabId);
+  const [browserInfo, platform] = await Promise.all([browser.runtime.getBrowserInfo(), browser.runtime.getPlatformInfo()]);
+  let logLine = "Logging was off. Turning on **Problems only** in the extension's settings captures a file the next time.";
+  if (logMode === "problems") {
+    try {
+      const { filename } = await writeDump(["report"]);
+      logLine = `A log was saved to \`Downloads/${filename}\`. It contains your Twitch user ID, so don't attach it here; say you have it and you'll be asked for it.`;
+    } catch (err) {
+      logLine = `Saving the log failed: ${err?.message || err}`;
+    }
+  } else if (logMode === "always") {
+    logLine = "Logging is on **Always**; **Export captures** in settings saves the log. Don't attach it here; say you have it.";
+  }
+  const lines = [
+    "**What happened:** <!-- e.g. an ad played, the stream froze or skipped -->",
+    "",
+    `**When:** ${new Date().toLocaleString()}`,
+    "",
+    "---",
+    `Twitch Block Delta ${browser.runtime.getManifest().version} · ${browserInfo.name} ${browserInfo.version} · ${platform.os}`,
+    `Mode: ${mode} · Logging: ${logMode}`,
+  ];
+  if (tab?.channel) {
+    const s = tab.session;
+    lines.push(`Channel: ${tab.channel} · Quality: ${tab.quality?.name ?? "?"}`);
+    lines.push(`This session: ${formatDuration(s.watchedMs)}, ${s.breaks} ad breaks (${s.blocked} blocked, ${s.leaked} got through, ${s.shown} allowed)`);
+    if (tab.lastBlock) lines.push(`Last rewrite: ${tab.lastBlock.action}${tab.lastBlock.error ? ` (${tab.lastBlock.error})` : ""}, ${formatDuration(Date.now() - tab.lastBlock.at)} ago`);
+  }
+  lines.push("", logLine);
+  const url = new URL("https://github.com/bragon9/twitch-block-delta/issues/new");
+  url.searchParams.set("title", tab?.channel ? `Problem on ${tab.channel}` : "Problem report");
+  url.searchParams.set("body", lines.join("\n"));
+  await browser.tabs.create({ url: url.href });
+}
+
+Promise.all([Capture.load(), browser.storage.local.get(["mode", "logMode"]), browser.storage.sync.get("allowedChannels")]).then(([, stored, synced]) => {
+  allowedChannels = new Set(synced.allowedChannels ?? []);
   setLogMode(stored.logMode);
   if (stored.mode === "observe" || stored.mode === "block") mode = stored.mode;
   log(`ready (${mode} mode)`);
