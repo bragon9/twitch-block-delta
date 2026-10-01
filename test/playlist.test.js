@@ -86,6 +86,19 @@ test("ad-to-live playlist is still stitched while ad segments remain", () => {
   eq(a.mapCount, 2, "init segments");
 });
 
+test("ad time follows the newest segment, not lingering markers", () => {
+  const atEdge = (path) => lib.analyzeMedia(read(`test/fixtures/${path}`)).adAtLiveEdge;
+  eq(atEdge("live-media.m3u8"), false, "live");
+  eq(atEdge("stitched-ad-start-media.m3u8"), true, "stitched pre-roll");
+  eq(atEdge("splice/mid-ad-native.m3u8"), true, "mid stitched ad");
+  eq(atEdge("stitched-ad-to-live-media.m3u8"), false, "live again, ad segments still listed");
+  eq(atEdge("splice/post-ad-native.m3u8"), false, "live after a pod, ad segments still listed");
+  eq(atEdge("maf-client-ad-media.m3u8"), false, "client marker announced before its start");
+  eq(atEdge("maf-client-ad-playing-media.m3u8"), true, "inside the client ad's planned span");
+  eq(atEdge("maf-client-ad-lingering-media.m3u8"), false, "client marker past its planned span");
+  eq(lib.analyzeMedia(read("test/fixtures/maf-client-ad-lingering-media.m3u8")).isAd, true, "lingering marker is still an ad for blocking");
+});
+
 test("live playlist has no ad kind", () => {
   eq(lib.analyzeMedia(read("test/fixtures/live-media.m3u8")).adKind, null, "kind");
 });

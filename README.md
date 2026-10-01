@@ -60,7 +60,8 @@ Firefox account.
   - an ad the player was left to see;
   - a rewrite that left nothing live to play;
   - a rewrite slower than 2s;
-  - a response that isn't a playlist (other than the 404 once a stream ends).
+  - a response that isn't a playlist (other than the 404 once a stream ends);
+  - a playlist the player waited more than 10s for (the stream froze).
 
   Files are limited to one per minute and 25 per browser session. **Save
   recent** writes the buffer on demand.
