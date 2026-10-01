@@ -14,8 +14,8 @@ const Session = {
     return { startedAt: now, watchedMs: 0, adMs: 0, lastBeatAt: null, breaks: 0, blocked: 0, shown: 0, leaked: 0, current: null };
   },
 
-  // A playlist from the page's player arrived. `isAd`: it was an ad playlist, so
-  // the time since the previous one counts as ad time too.
+  // A playlist from the page's player arrived. `isAd`: Twitch was serving an ad
+  // at its newest segment, so the time since the previous one counts as ad time.
   beat(s, now, isAd) {
     if (s.lastBeatAt !== null) {
       const gap = now - s.lastBeatAt;

@@ -105,6 +105,9 @@ function analyzeMedia(text) {
     // live segments continue and Twitch's page is expected to render the ad.
     adKind: null,
     isAd: false,
+    // Whether the newest segment is in an ad, i.e. Twitch is serving one now.
+    // isAd stays true while an ad's markers linger after it, often ~30s.
+    adAtLiveEdge: false,
   };
   if (!result.valid) return result;
 
@@ -118,6 +121,13 @@ function analyzeMedia(text) {
   // A discontinuity after the last segment announces a switch (at an ad break,
   // to the ad) whose segments are only in the prefetch hints so far.
   let discontinuityAfterLastSegment = false;
+  let newestTitle = null;
+  let newestStart = NaN;
+  let nextStart = NaN;
+  // Client ad markers as [start ms, end ms]; a marker with no span makes the
+  // whole playlist count as an ad, as does a cue tag or adsquared URL.
+  const clientSpans = [];
+  let untimedMarker = false;
 
   for (const raw of text.split("\n")) {
     const line = raw.trim();
@@ -128,10 +138,12 @@ function analyzeMedia(text) {
     if (/SCTE35|CUE-OUT|CUE-IN/.test(line)) {
       reasons.add(`cue tag ${tag}`);
       stitched = true;
+      untimedMarker = true;
     }
     if (line.includes("/adsquared/")) {
       reasons.add("adsquared url");
       stitched = true;
+      untimedMarker = true;
     }
 
     switch (tag) {
@@ -145,6 +157,9 @@ function analyzeMedia(text) {
         result.discontinuities++;
         discontinuityAfterLastSegment = true;
         break;
+      case "#EXT-X-PROGRAM-DATE-TIME":
+        nextStart = Date.parse(value);
+        break;
       case "#EXT-X-TWITCH-PREFETCH":
         result.prefetch++;
         break;
@@ -155,6 +170,9 @@ function analyzeMedia(text) {
         result.segments++;
         discontinuityAfterLastSegment = false;
         const title = value.slice(value.indexOf(",") + 1);
+        newestTitle = title;
+        newestStart = nextStart;
+        nextStart = newestStart + Number(value.slice(0, value.indexOf(","))) * 1000;
         result.titles[title] = (result.titles[title] || 0) + 1;
         if (title !== LIVE_SEGMENT_TITLE) {
           reasons.add(`segment title "${title}"`);
@@ -178,6 +196,13 @@ function analyzeMedia(text) {
             primaryPod: attrs["X-TTV-MAF-AD-PRIMARY-POD"] ?? null,
             fallbackFormats: attrs["X-TTV-MAF-AD-FALLBACK-FORMATS"] ?? null,
           });
+          // Stitched ads are judged by their segments instead.
+          if (!/stitched/i.test(cls)) {
+            const start = Date.parse(attrs["START-DATE"]);
+            const seconds = Number(attrs.DURATION ?? attrs["PLANNED-DURATION"]);
+            if (Number.isFinite(start) && seconds > 0) clientSpans.push([start, start + seconds * 1000]);
+            else untimedMarker = true;
+          }
         }
         if (/stitched/i.test(cls)) stitched = true;
         const source = attrs["X-TV-TWITCH-STREAM-SOURCE"];
@@ -206,6 +231,13 @@ function analyzeMedia(text) {
   result.adReasons = [...reasons];
   result.adKind = stitched ? "stitched" : reasons.size > 0 ? "client" : null;
   result.isAd = result.adKind !== null;
+  result.adAtLiveEdge =
+    result.isAd &&
+    (untimedMarker ||
+      newestTitle === null ||
+      newestTitle !== LIVE_SEGMENT_TITLE ||
+      discontinuityAfterLastSegment ||
+      clientSpans.some(([start, end]) => !Number.isFinite(newestStart) || (newestStart >= start && newestStart < end)));
   return result;
 }
 

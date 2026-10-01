@@ -71,6 +71,7 @@ function sessionFields() {
     lastMediaAt: null,
     requestTypes: [],
     adActive: false,
+    badgeShown: false,
     adKind: null,
     adStartedAt: null,
     lastAdReasons: [],
@@ -92,7 +93,7 @@ function getTab(tabId) {
 // Keeps the channel and usher parameters: a new page's master playlist can
 // arrive before the event that triggered this, and blocking needs them.
 function resetSession(tab) {
-  if (tab.adActive) setBadge(tab.tabId, "");
+  if (tab.badgeShown) setBadge(tab.tabId, "");
   Object.assign(tab, sessionFields());
 }
 
@@ -100,6 +101,8 @@ const POST_PROBLEM_MS = 15_000;
 const DUMP_COOLDOWN_MS = 60_000;
 const MAX_DUMPS_PER_RUN = 25;
 const SLOW_REWRITE_MS = 2_000;
+// The page's player waited this long for a playlist, so the stream froze.
+const STALLED_PLAYLIST_MS = 10_000;
 // { reasons, timer } while a dump is waiting for the seconds after a problem.
 let pendingDump = null;
 let lastDumpAt = 0;
@@ -140,13 +143,18 @@ async function flushDump() {
   }
 }
 
+// The popup's per-tab totals, so an export can be checked against what it showed.
+function sessionTotals() {
+  return [...tabs.values()].filter((tab) => tab.channel).map((tab) => ({ tabId: tab.tabId, channel: tab.channel, ...tab.session }));
+}
+
 async function writeDump(reasons) {
   const entries = Ring.snapshot();
   const since = entries.length > 0 ? Date.parse(entries[0].at) : Date.now();
   const requests = [...requestLog, ...pendingRequests.values()].filter((r) => r.at >= since);
   const filename = `twitch-block-delta/problem-${fileStamp()}.json`;
   await saveJson(
-    { exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, encoding: EXPORT_ENCODING, reasons, requests, entries },
+    { exportedAt: new Date().toISOString(), version: browser.runtime.getManifest().version, encoding: EXPORT_ENCODING, reasons, sessions: sessionTotals(), requests, entries },
     filename,
     false,
   );
@@ -308,6 +316,7 @@ async function onMaster(details, text) {
 // Returns the text to send to the player. Recording happens afterwards so
 // storage writes never delay playback.
 async function onMedia(details, text, record) {
+  const waitedMs = sinceStart(record);
   const variant = variants.get(details.url) ?? null;
   let outcome = null;
   if (mode === "block" && !variant?.allowed) {
@@ -326,12 +335,17 @@ async function onMedia(details, text, record) {
       adKind: outcome?.analysis?.adKind ?? null,
     });
   }
-  observeMedia(details, text, variant, outcome).catch((err) => console.error("[delta]", err));
+  observeMedia(details, text, variant, outcome, waitedMs).catch((err) => console.error("[delta]", err));
   return outcome?.text ?? text;
 }
 
-async function observeMedia(details, text, variant, outcome) {
+async function observeMedia(details, text, variant, outcome, waitedMs) {
   const tab = getTab(details.tabId);
+  // Secondary players and previews share the tab. Only playlists from the main
+  // player's master drive the tab's ad state; unknown URLs are recorded only.
+  const isPageStream = Boolean(variant && variant.channel === tab.channel && variant.playerType === tab.playerType);
+  // Includes requests the player gave up on, which arrive here with no body.
+  if (isPageStream && waitedMs > STALLED_PLAYLIST_MS) anomaly("stalled-playlist", { channel: variant.channel, variant: variant.name, waitedMs, bytes: text.length });
   if (!text.startsWith("#EXTM3U")) {
     await record({ kind: "invalid-response", tabId: details.tabId, channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length, head: text.slice(0, 200) });
     // Empty bodies are aborted requests, and a stream that sent #EXT-X-ENDLIST
@@ -339,16 +353,13 @@ async function observeMedia(details, text, variant, outcome) {
     if (text.length > 0 && !streams.get(details.url)?.ended) anomaly("invalid-response", { channel: variant?.channel ?? null, variant: variant?.name ?? null, bytes: text.length });
     return;
   }
-  // Secondary players and previews share the tab. Only playlists from the main
-  // player's master drive the tab's ad state; unknown URLs are recorded only.
-  const isPageStream = Boolean(variant && variant.channel === tab.channel && variant.playerType === tab.playerType);
   if (variant && isPageStream) tab.quality = { name: variant.name, stableId: variant.stableId, codecs: variant.codecs };
   tab.mediaResponses++;
   tab.lastMediaAt = Date.now();
   if (!tab.requestTypes.includes(details.type)) tab.requestTypes.push(details.type);
 
   const analysis = analyzeMedia(text);
-  if (isPageStream) Session.beat(tab.session, tab.lastMediaAt, analysis.isAd);
+  if (isPageStream) Session.beat(tab.session, tab.lastMediaAt, analysis.adAtLiveEdge);
   const signature = playlistSignature(analysis);
   const previous = streams.get(details.url);
   remember(streams, details.url, { signature, isAd: analysis.isAd, ended: analysis.ended, text });
@@ -429,12 +440,18 @@ const BADGE_BY_AD_KIND = { stitched: "AD", client: "MAF" };
 const BADGE_COLOR_BY_VERDICT = { blocked: BADGE_GREEN, shown: BADGE_GREY, leaked: BADGE_RED };
 
 async function updateAdState(tab, analysis, outcome) {
-  if (analysis.isAd) {
-    const verdict = adVerdict(outcome);
+  const verdict = adVerdict(outcome);
+  if (analysis.isAd && tab.adActive) Session.adUpdate(tab.session, verdict);
+  // The badge shows while the ad would be playing, not while its markers
+  // linger in the playlist afterwards.
+  if (analysis.adAtLiveEdge) {
     // Observe only is for studying ads, so an ad there is flagged like a leak.
     const color = verdict === "shown" && mode === "observe" ? BADGE_RED : BADGE_COLOR_BY_VERDICT[verdict];
     setBadge(tab.tabId, BADGE_BY_AD_KIND[analysis.adKind], color);
-    if (tab.adActive) Session.adUpdate(tab.session, verdict);
+    tab.badgeShown = true;
+  } else if (tab.badgeShown) {
+    setBadge(tab.tabId, "");
+    tab.badgeShown = false;
   }
   if (analysis.adKind === tab.adKind) return;
   const now = Date.now();
@@ -470,7 +487,6 @@ async function updateAdState(tab, analysis, outcome) {
     tab.adActive = false;
     tab.adKind = null;
     Session.adEnd(tab.session);
-    setBadge(tab.tabId, "");
     log(`ad end ${tab.channel} tab=${tab.tabId} after ${Math.round(durationMs / 1000)}s`);
     await record({ kind: "event", event: "ad-end", adKind: endedKind, tabId: tab.tabId, channel: tab.channel, durationMs, tabInfo });
   }
@@ -560,6 +576,7 @@ async function exportCaptures() {
     exportedAt: new Date().toISOString(),
     version: browser.runtime.getManifest().version,
     encoding: EXPORT_ENCODING,
+    sessions: sessionTotals(),
     requests,
     entries,
   };
