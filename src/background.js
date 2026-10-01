@@ -71,6 +71,7 @@ function sessionFields() {
     lastMediaAt: null,
     requestTypes: [],
     adActive: false,
+    badgeShown: false,
     adKind: null,
     adStartedAt: null,
     lastAdReasons: [],
@@ -92,7 +93,7 @@ function getTab(tabId) {
 // Keeps the channel and usher parameters: a new page's master playlist can
 // arrive before the event that triggered this, and blocking needs them.
 function resetSession(tab) {
-  if (tab.adActive) setBadge(tab.tabId, "");
+  if (tab.badgeShown) setBadge(tab.tabId, "");
   Object.assign(tab, sessionFields());
 }
 
@@ -439,12 +440,18 @@ const BADGE_BY_AD_KIND = { stitched: "AD", client: "MAF" };
 const BADGE_COLOR_BY_VERDICT = { blocked: BADGE_GREEN, shown: BADGE_GREY, leaked: BADGE_RED };
 
 async function updateAdState(tab, analysis, outcome) {
-  if (analysis.isAd) {
-    const verdict = adVerdict(outcome);
+  const verdict = adVerdict(outcome);
+  if (analysis.isAd && tab.adActive) Session.adUpdate(tab.session, verdict);
+  // The badge shows while the ad would be playing, not while its markers
+  // linger in the playlist afterwards.
+  if (analysis.adAtLiveEdge) {
     // Observe only is for studying ads, so an ad there is flagged like a leak.
     const color = verdict === "shown" && mode === "observe" ? BADGE_RED : BADGE_COLOR_BY_VERDICT[verdict];
     setBadge(tab.tabId, BADGE_BY_AD_KIND[analysis.adKind], color);
-    if (tab.adActive) Session.adUpdate(tab.session, verdict);
+    tab.badgeShown = true;
+  } else if (tab.badgeShown) {
+    setBadge(tab.tabId, "");
+    tab.badgeShown = false;
   }
   if (analysis.adKind === tab.adKind) return;
   const now = Date.now();
@@ -480,7 +487,6 @@ async function updateAdState(tab, analysis, outcome) {
     tab.adActive = false;
     tab.adKind = null;
     Session.adEnd(tab.session);
-    setBadge(tab.tabId, "");
     log(`ad end ${tab.channel} tab=${tab.tabId} after ${Math.round(durationMs / 1000)}s`);
     await record({ kind: "event", event: "ad-end", adKind: endedKind, tabId: tab.tabId, channel: tab.channel, durationMs, tabInfo });
   }
