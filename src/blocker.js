@@ -1,15 +1,27 @@
 "use strict";
 // Stage 1 blocking. Rewrites the page's media playlists in flight: stitched ads
-// are replaced with the same live segments from a logged-in "embed" session of
-// the same rendition, and client ad markers are removed. The player is never
+// are replaced with the same live segments from a logged-in backup session (see
+// BACKUP_PLAYER_TYPES) of the same rendition, and client ad markers are removed. The player is never
 // paused, reloaded or resumed, so hidden tabs behave exactly like visible ones.
 
-const BACKUP_PLAYER_TYPE = "embed";
+// Player types asked for the backup, best first. Twitch decides per player type
+// and account whether a session gets ads, and that changes: "embed" was ad-free in
+// every ad captured until it wasn't. So when the backup carries ads too, the
+// others are tried and the one that works is remembered for the channel.
+// picture-by-picture only offers low renditions, so it only helps there.
+const BACKUP_PLAYER_TYPES = ["embed", "popout", "site", "autoplay", "picture-by-picture"];
 const BACKUP_MASTER_TTL_MS = 5 * 60_000;
 const BACKUP_FETCH_TIMEOUT_MS = 3_000;
+// With every backup carrying ads, searching again on each poll would hit Twitch
+// five times every 2s for nothing.
+const BACKUP_SEARCH_INTERVAL_MS = 10_000;
 
-// channel -> { fetchedAt, promise } for the backup session's master playlist.
+// `${channel}:${playerType}` -> { fetchedAt, promise } for that backup session's master playlist.
 const backupMasters = new Map();
+// channel -> the player type whose backup was last ad-free.
+const preferredBackupTypes = new Map();
+// channel -> when the other player types were last tried and none was clean.
+const failedBackupSearches = new Map();
 // Media playlist URL -> splice memory.
 const splicedStreams = new Map();
 // Playback sessions (one per master playlist) that have had a stitched ad. From
@@ -25,34 +37,69 @@ function withTimeout(promise, ms, label) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-function getBackupMaster(channel, usherParams, refresh) {
-  const cached = backupMasters.get(channel);
+function getBackupMaster(channel, playerType, usherParams, refresh) {
+  const key = `${channel}:${playerType}`;
+  const cached = backupMasters.get(key);
   if (!refresh && cached && Date.now() - cached.fetchedAt < BACKUP_MASTER_TTL_MS) return cached.promise;
   const promise = (async () => {
     const oauth = await getTwitchOAuth();
-    const token = await fetchAccessToken(channel, BACKUP_PLAYER_TYPE, oauth);
+    const token = await fetchAccessToken(channel, playerType, oauth);
     const master = parseMaster(await fetchText(buildUsherUrl(channel, token, usherParams)));
     return { master, auth: oauth ? "user" : "anon", token: summarizeToken(JSON.parse(token.value)) };
   })();
-  backupMasters.set(channel, { fetchedAt: Date.now(), promise });
+  backupMasters.set(key, { fetchedAt: Date.now(), promise });
   promise.catch(() => {
-    if (backupMasters.get(channel)?.promise === promise) backupMasters.delete(channel);
+    if (backupMasters.get(key)?.promise === promise) backupMasters.delete(key);
   });
   return promise;
 }
 
-async function fetchBackupPlaylist(variant, usherParams) {
+async function fetchBackupPlaylist(variant, usherParams, playerType) {
   // A cached backup session can expire; retry once with a fresh one.
   for (const refresh of [false, true]) {
-    const { master, auth } = await getBackupMaster(variant.channel, usherParams, refresh);
+    const { master, auth } = await getBackupMaster(variant.channel, playerType, usherParams, refresh);
     const backupVariant = pickVariant(master.variants, variant);
-    if (!backupVariant) throw new Error(`backup has no ${variant.name} (${variant.codecs})`);
+    if (!backupVariant) throw new Error(`${playerType} backup has no ${variant.name} (${variant.codecs})`);
     try {
-      return { text: await fetchText(backupVariant.url), url: backupVariant.url, variant: backupVariant.name, auth };
+      return { text: await fetchText(backupVariant.url), url: backupVariant.url, variant: backupVariant.name, auth, playerType };
     } catch (err) {
       if (refresh) throw err;
     }
   }
+}
+
+function backupHasAds(backup) {
+  return parseMediaPlaylist(backup.text).segments.some((s) => !s.isLive);
+}
+
+// The first player type (the channel's last good one first) whose backup carries
+// no ads. If none is clean, the one with the fewest ad segments, so the splice
+// still gets what live segments it can; throws only if nothing could be fetched.
+async function fetchBackup(variant, usherParams) {
+  const channel = variant.channel;
+  const preferred = preferredBackupTypes.get(channel);
+  const order = preferred ? [preferred, ...BACKUP_PLAYER_TYPES.filter((t) => t !== preferred)] : BACKUP_PLAYER_TYPES;
+  const attempt = (playerType) =>
+    withTimeout(fetchBackupPlaylist(variant, usherParams, playerType), BACKUP_FETCH_TIMEOUT_MS, `${playerType} backup`).catch((error) => ({ error }));
+  const results = [await attempt(order[0])];
+  if (!results[0].text || backupHasAds(results[0])) {
+    const searchedAt = failedBackupSearches.get(channel) ?? 0;
+    if (Date.now() - searchedAt >= BACKUP_SEARCH_INTERVAL_MS) results.push(...(await Promise.all(order.slice(1).map(attempt))));
+  }
+  const usable = results.filter((r) => r.text);
+  const clean = usable.find((r) => !backupHasAds(r));
+  if (clean) {
+    failedBackupSearches.delete(channel);
+    remember(preferredBackupTypes, channel, clean.playerType);
+    return clean;
+  }
+  if (results.length > 1) remember(failedBackupSearches, channel, Date.now());
+  if (usable.length === 0) throw results[0].error;
+  return usable.reduce((best, r) => (backupAdCount(r) < backupAdCount(best) ? r : best));
+}
+
+function backupAdCount(backup) {
+  return parseMediaPlaylist(backup.text).segments.filter((s) => !s.isLive).length;
 }
 
 // Returns { text, action, ... }. Actions:
@@ -86,7 +133,7 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
   if (analysis.adKind === "stitched") {
     try {
       if (!variant) throw new Error("rendition unknown (its master playlist was not seen)");
-      backup = await withTimeout(fetchBackupPlaylist(variant, usherParams), BACKUP_FETCH_TIMEOUT_MS, "backup");
+      backup = await withTimeout(fetchBackup(variant, usherParams), 2 * BACKUP_FETCH_TIMEOUT_MS, "backup");
     } catch (err) {
       error = String(err?.message || err);
     }
@@ -99,6 +146,7 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
     error,
     backupVariant: backup?.variant ?? null,
     backupAuth: backup?.auth ?? null,
+    backupPlayerType: backup?.playerType ?? null,
     backupUrl: backup?.url ?? null,
     backupText: backup?.text ?? null,
   };

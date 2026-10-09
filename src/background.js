@@ -396,6 +396,7 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
         error: outcome.error ?? null,
         backupVariant: outcome.backupVariant ?? null,
         backupAuth: outcome.backupAuth ?? null,
+        backupPlayerType: outcome.backupPlayerType ?? null,
         rewriteMs: outcome.rewriteMs,
         chain: `output:${details.url}`,
         text: outcome.text,
@@ -407,6 +408,7 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
           ...base,
           backupVariant: outcome.backupVariant,
           backupAuth: outcome.backupAuth,
+          backupPlayerType: outcome.backupPlayerType,
           chain: `backup:${outcome.backupUrl}`,
           text: outcome.backupText,
         });

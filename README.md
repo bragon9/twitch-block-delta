@@ -121,10 +121,13 @@ segments from two sessions).
 
 - **Stitched ads** (pre-rolls and mid-rolls in the video stream). The extension
   fetches the same rendition, matched by variant ID and codec, from a logged-in
-  `embed` session, which has been ad-free in every ad captured so far. It
+  `embed` session, which was ad-free in every ad captured at first. It
   replaces the ad segments with the same-numbered live segments from that
   session and renumbers everything by live sequence. The player sees one
-  continuous live stream, including 1440p HEVC.
+  continuous live stream, including 1440p HEVC. If the backup carries ads too
+  (Twitch has done this to `embed`), the other player types (`popout`, `site`,
+  `autoplay`, `picture-by-picture`) are tried and the first ad-free one is used
+  for the rest of the channel's session.
 - **Client ad markers** (`twitch-maf-ad`: the live video continues and Twitch's
   page is told to draw an ad). The marker is removed.
 - If no clean backup is available, ad segments are dropped and the player waits
