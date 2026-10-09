@@ -291,3 +291,20 @@ function pickVariant(variants, wanted) {
     null
   );
 }
+
+// The best rendition below `wanted` in the same video codec family, for when no
+// ad-free session has the wanted one. Different families can't share a stream.
+function pickLowerVariant(variants, wanted) {
+  const pixels = (v) => {
+    const [w, h] = (v.resolution || "").split("x").map(Number);
+    return w > 0 && h > 0 ? w * h : null;
+  };
+  const family = (v) => (v.codecs || "").split(",")[0].split(".")[0];
+  const limit = wanted && pixels(wanted);
+  if (!limit) return null;
+  return (
+    variants
+      .filter((v) => pixels(v) !== null && pixels(v) < limit && family(v) === family(wanted))
+      .sort((a, b) => pixels(b) - pixels(a) || (b.bandwidth || 0) - (a.bandwidth || 0))[0] || null
+  );
+}

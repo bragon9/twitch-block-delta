@@ -29,6 +29,10 @@ async function getTwitchOAuth() {
   }
 }
 
+// Without a limit a request on a dropped connection can hang for minutes, and the
+// blocker caches the promise of its backup session.
+const FETCH_TIMEOUT_MS = 8_000;
+
 async function fetchAccessToken(channel, playerType, oauth) {
   const headers = { "Client-ID": TWITCH_WEB_CLIENT_ID, "Content-Type": "application/json" };
   if (oauth) headers.Authorization = `OAuth ${oauth}`;
@@ -36,6 +40,7 @@ async function fetchAccessToken(channel, playerType, oauth) {
     method: "POST",
     headers,
     credentials: "omit",
+    signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     body: JSON.stringify({ query: TOKEN_QUERY, variables: { login: channel, playerType } }),
   });
   const json = await res.json();
@@ -45,7 +50,7 @@ async function fetchAccessToken(channel, playerType, oauth) {
 }
 
 async function fetchText(url) {
-  const res = await fetch(url, { credentials: "omit", cache: "no-store" });
+  const res = await fetch(url, { credentials: "omit", cache: "no-store", signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${new URL(url).host}`);
   return res.text();
 }
