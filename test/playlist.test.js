@@ -4,7 +4,7 @@ ObjC.import("Foundation");
 const root = $.NSProcessInfo.processInfo.environment.objectForKey("DELTA_ROOT").js;
 const read = (path) => $.NSString.stringWithContentsOfFileEncodingError(`${root}/${path}`, $.NSUTF8StringEncoding, null).js;
 const lib = (0, eval)(
-  `${read("src/playlist.js")}\n;({ parseAttributes, parseMaster, analyzeMedia, playlistSignature, redactMaster, pickVariant })`,
+  `${read("src/playlist.js")}\n;({ parseAttributes, parseMaster, analyzeMedia, playlistSignature, redactMaster, pickVariant, pickLowerVariant })`,
 );
 
 const results = [];
@@ -124,6 +124,22 @@ test("pickVariant prefers matching codecs and never falls back to another rendit
   eq(lib.pickVariant(variants, { name: "1080p60", stableId: "1080p60", codecs: "avc1.4D401F,mp4a.40.2" }), variants[1], "codec match");
   eq(lib.pickVariant(variants, { name: "1080p60", stableId: "1080p60", codecs: "av01" }), variants[0], "id match");
   eq(lib.pickVariant(variants, { name: "1440p60", stableId: "1440p60", codecs: "avc1" }), null, "no fallback");
+});
+
+test("pickLowerVariant takes the best lower rendition of the same codec family", () => {
+  const avc = "avc1.4D401F,mp4a.40.2";
+  const variants = [
+    { name: "1080p60", resolution: "1920x1080", codecs: "hvc1.2.4.L123.B0,mp4a.40.2", bandwidth: 6000000 },
+    { name: "720p60", resolution: "1280x720", codecs: avc, bandwidth: 3000000 },
+    { name: "480p", resolution: "852x480", codecs: avc, bandwidth: 1500000 },
+    { name: "360p", resolution: "640x360", codecs: avc, bandwidth: 630000 },
+    { name: "audio_only", resolution: null, codecs: "mp4a.40.2", bandwidth: 160000 },
+  ];
+  const wanted = { name: "1080p60", resolution: "1920x1080", codecs: avc };
+  eq(lib.pickLowerVariant(variants, wanted).name, "720p60", "best below");
+  eq(lib.pickLowerVariant(variants, { ...wanted, resolution: "640x360" }), null, "nothing below the lowest");
+  eq(lib.pickLowerVariant(variants, { ...wanted, codecs: "av01.0.08M.08" }), null, "never another codec family");
+  eq(lib.pickLowerVariant(variants, { name: "audio_only", resolution: null, codecs: avc }), null, "no resolution");
 });
 
 results.join("\n");

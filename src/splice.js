@@ -7,6 +7,10 @@
 //
 // Once a stream has been spliced, its output is always numbered by live sequence,
 // because Twitch's own numbering for that session is offset by the ad segments.
+//
+// When no ad-free backup has the page's rendition, a lower rendition of the same
+// stream fills in instead. Those segments have their own init segment and
+// resolution, so each switch to or from them is marked with a discontinuity.
 
 const MAX_WINDOW_SEGMENTS = 20;
 const REGENERATED_HEADER_TAGS = new Set([
@@ -147,11 +151,16 @@ function resolveNativeLiveSeqs(native, memory) {
 }
 
 // memory: per-stream state kept across calls, created by newSpliceMemory().
+// lowSeqs: live sequences served from a lower rendition. boundaries: live
+// sequences that start after a switch between renditions, so each keeps its
+// discontinuity (and the sequence number counting them) in every later playlist.
+// lastOutput: the last playlist produced, which the blocker repeats if nothing new is live.
 function newSpliceMemory() {
-  return { nativeOffset: null, liveInit: null };
+  return { nativeOffset: null, liveInit: null, lowSeqs: new Set(), boundaries: new Set(), lastOutput: null };
 }
 
-function spliceMediaPlaylist(nativeText, backupText, memory) {
+// `backupLowered`: the backup is a lower rendition than the page's.
+function spliceMediaPlaylist(nativeText, backupText, memory, { backupLowered = false } = {}) {
   const native = parseMediaPlaylist(nativeText);
   const backup = backupText ? parseMediaPlaylist(backupText, { assumeFreshSession: true }) : null;
   const unresolved = resolveNativeLiveSeqs(native, memory);
@@ -166,7 +175,11 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
     if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: "backup" });
   }
   for (const seg of native.segments) {
-    if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: "native" });
+    if (!seg.isLive || seg.liveSeq === null) continue;
+    // Once a number came from the lower rendition it stays there, so the player
+    // is never handed a different segment for a number it already has.
+    if (backupLowered && memory.lowSeqs.has(seg.liveSeq) && bySeq.has(seg.liveSeq)) continue;
+    bySeq.set(seg.liveSeq, { seg, source: "native" });
   }
 
   const stats = {
@@ -175,6 +188,7 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
     unresolvedNative: unresolved,
     fromNative: 0,
     fromBackup: 0,
+    fromLowered: 0,
     window: null,
     gapTrimmed: false,
   };
@@ -195,13 +209,24 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
   out.push(`#EXT-X-TARGETDURATION:${targetDuration}`);
   out.push(`#EXT-X-MEDIA-SEQUENCE:${window[0]}`);
   out.push(`#EXT-X-TWITCH-LIVE-SEQUENCE:${window[0]}`);
+  if (backupLowered) for (const seq of window) if (bySeq.get(seq).source === "backup") memory.lowSeqs.add(seq);
+  const isLow = (seq) => memory.lowSeqs.has(seq);
+  for (const seq of window.slice(1)) if (isLow(seq) !== isLow(seq - 1)) memory.boundaries.add(seq);
+  const discontinuitiesBefore = [...memory.boundaries].filter((seq) => seq <= window[0]).length;
+  if (discontinuitiesBefore > 0) out.push(`#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitiesBefore}`);
   out.push(...native.dateRanges.filter((line) => !isAdDateRange(line)));
 
   let currentMap = null;
   for (const seq of window) {
     const { seg, source } = bySeq.get(seq);
-    // Backup init segments are byte-identical to the page's, so reuse the page's.
-    const map = source === "native" ? seg.map : memory.liveInit ?? seg.map;
+    // Backup init segments of the page's rendition are byte-identical to the
+    // page's, so reuse the page's. A lower rendition needs its own.
+    const lowered = source === "backup" && isLow(seq);
+    const map = source === "native" || lowered ? seg.map : memory.liveInit ?? seg.map;
+    if (seq > window[0] && memory.boundaries.has(seq)) {
+      out.push("#EXT-X-DISCONTINUITY");
+      currentMap = null;
+    }
     if (map && map !== currentMap) {
       out.push(`#EXT-X-MAP:URI="${map}"`);
       currentMap = map;
@@ -210,6 +235,7 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
     out.push(`#EXTINF:${seg.extinf}`, seg.url);
     if (source === "native") stats.fromNative++;
     else stats.fromBackup++;
+    if (lowered) stats.fromLowered++;
   }
 
   // Prefetch hints describe the segments after a playlist's newest one, so they
@@ -217,7 +243,8 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
   // (like the start of an ad) sits between that segment and the hints.
   const tail = bySeq.get(window.at(-1));
   const tailSource = tail.source === "native" ? native : backup;
-  stats.prefetch = tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe && !native.ended ? tail.source : "dropped";
+  const tailLowered = tail.source === "backup" && isLow(window.at(-1));
+  stats.prefetch = !tailLowered && tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe && !native.ended ? tail.source : "dropped";
   if (stats.prefetch !== "dropped") {
     for (const url of tailSource.prefetch) out.push(`#EXT-X-TWITCH-PREFETCH:${url}`);
   }

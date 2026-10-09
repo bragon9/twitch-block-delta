@@ -140,6 +140,31 @@ test("a stream that has ended gets no prefetch hints", () => {
   eq(text.trimEnd().split("\n").at(-1), "#EXT-X-ENDLIST", "last line");
 });
 
+test("a lower-rendition backup fills the ad's numbers with discontinuities around it", () => {
+  const native = fixture("post-ad-native");
+  const lowered = fixture("post-ad-backup").replaceAll("https://backup.example/", "https://low.example/");
+  const memory = lib.newSpliceMemory();
+  const { text, stats } = lib.spliceMediaPlaylist(native, lowered, memory, { backupLowered: true });
+  const out = lib.parseMediaPlaylist(text);
+  eq(stats.fromLowered > 0, true, "uses lowered segments");
+  eq(out.segments.every((s, i) => s.liveSeq === out.mediaSequence + i), true, "contiguous numbering");
+  const lines = text.split("\n");
+  const firstNative = lines.findIndex((l) => l.startsWith("https://native.example/"));
+  eq(lines.slice(0, firstNative).filter((l) => l === "#EXT-X-DISCONTINUITY").length, 1, "one discontinuity into native");
+  eq(lines[lines.findIndex((l) => l === "#EXT-X-DISCONTINUITY") + 1].startsWith("#EXT-X-MAP"), true, "new init after it");
+  eq(text.includes("https://low.example/") && text.includes('#EXT-X-MAP:URI="https://low.example/'), true, "own init segment");
+  eq(stats.prefetch, "native", "page prefetch kept when the newest segment is the page's");
+  // The next poll, with the backup gone: lowered numbers are gone from the page
+  // playlist too, but the discontinuity count carries on.
+  const next = lib.spliceMediaPlaylist(native, null, memory, { backupLowered: false });
+  eq(next.text === null || !next.text.includes("#EXT-X-DISCONTINUITY-SEQUENCE:0"), true, "count never resets");
+});
+
+test("a stream that never used a lower rendition has no discontinuities", () => {
+  const { text } = lib.spliceMediaPlaylist(fixture("post-ad-native"), fixture("post-ad-backup"), lib.newSpliceMemory());
+  eq(text.includes("DISCONTINUITY"), false, "none");
+});
+
 test("no backup and no live segments yields nothing to splice", () => {
   const { text } = lib.spliceMediaPlaylist(fixture("mid-ad-native"), null, lib.newSpliceMemory());
   eq(text, null, "text");

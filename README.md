@@ -127,12 +127,16 @@ segments from two sessions).
   continuous live stream, including 1440p HEVC. If the backup carries ads too
   (Twitch has done this to `embed`), the other player types (`popout`, `site`,
   `autoplay`, `picture-by-picture`) are tried and the first ad-free one is used
-  for the rest of the channel's session.
+  for the rest of the channel's session. If none has the page's rendition
+  ad-free, a lower rendition of the same codec family fills in for the break
+  (a discontinuity marks each switch), and the full-quality search repeats every
+  10s so playback goes back up as soon as it can.
 - **Client ad markers** (`twitch-maf-ad`: the live video continues and Twitch's
   page is told to draw an ad). The marker is removed.
 - If no clean backup is available, ad segments are dropped and the player waits
-  at the live edge. The ad is only shown when there is nothing live at all to
-  serve (e.g. a pre-roll with no backup).
+  at the live edge, repeating the last playlist rather than showing the ad. The
+  ad is only shown when there is nothing to repeat either (e.g. a pre-roll with
+  no backup).
 
 | File | Role |
 | --- | --- |

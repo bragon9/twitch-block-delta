@@ -397,6 +397,7 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
         backupVariant: outcome.backupVariant ?? null,
         backupAuth: outcome.backupAuth ?? null,
         backupPlayerType: outcome.backupPlayerType ?? null,
+        backupLowered: outcome.backupLowered ?? false,
         rewriteMs: outcome.rewriteMs,
         chain: `output:${details.url}`,
         text: outcome.text,
@@ -420,7 +421,7 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
       if (outcome.error) anomaly("rewrite-error", detail);
       // The player got the ad, or nothing live to play.
       if (outcome.action === "fallback-native") anomaly("ad-not-blocked", detail);
-      if (outcome.action === "strip-ad") anomaly("no-live-segments", detail);
+      if (outcome.action === "strip-ad" || outcome.action === "hold") anomaly("no-live-segments", detail);
       if (outcome.rewriteMs > SLOW_REWRITE_MS) anomaly("slow-rewrite", detail);
     }
   }
