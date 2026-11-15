@@ -55,13 +55,15 @@ Firefox account.
   memory only. If something goes wrong, they are saved with the ~15s after it to
   `Downloads/twitch-block-delta/problem-<time>.json`, with no prompt. Problems
   are:
-  - a rewrite that threw or returned an error (backup fetch failed, backup also
-    had ads);
+  - a rewrite that threw or returned an error (no backup could be fetched);
   - an ad the player was left to see;
   - a rewrite that left nothing live to play;
   - a rewrite slower than 2s;
   - a response that isn't a playlist (other than the 404 once a stream ends);
-  - a playlist the player waited more than 10s for (the stream froze).
+  - a playlist the player waited more than 10s for (the stream froze);
+  - the newest segment given to the player not advancing for more than 6s while
+    it kept polling (the stream froze with no slow request);
+  - live segments that no source had, so the player skipped them.
 
   Files are limited to one per minute and 25 per browser session. **Save
   recent** writes the buffer on demand.
@@ -97,7 +99,7 @@ smaller); expand one with:
 tools/expand_export.py twitch-block-delta-….json   # writes ….expanded.json
 ```
 
-Each splice also records the backup playlist it used, so any rewrite can be
+Each splice also records every backup playlist it used, so any rewrite can be
 replayed offline.
 
 Captured files contain short-lived signed URLs and your Twitch user ID inside ad
@@ -105,8 +107,8 @@ tokens. Don't post them publicly.
 
 ## Privacy
 
-The extension sends nothing anywhere except Twitch. To fetch an ad-free backup
-playlist it reads your Twitch login cookie and uses it only with Twitch's own
+The extension sends nothing anywhere except Twitch. To fetch backup playlists
+it reads your Twitch login cookie and uses it only with Twitch's own
 API (`gql.twitch.tv`). Logs stay on your computer, in extension storage or your
 Downloads folder. The allowed-channel list is stored with Firefox's own settings
 sync, if you use it. **Report a problem** only opens a GitHub page for you to
@@ -120,21 +122,30 @@ are identical in every playback session (verified by hashing header and media
 segments from two sessions).
 
 - **Stitched ads** (pre-rolls and mid-rolls in the video stream). The extension
-  fetches the same rendition, matched by variant ID and codec, from a logged-in
-  `embed` session, which has been ad-free in every ad captured so far. It
-  replaces the ad segments with the same-numbered live segments from that
-  session and renumbers everything by live sequence. The player sees one
-  continuous live stream, including 1440p HEVC.
+  fetches the same rendition, matched by variant ID and codec, from logged-in
+  `embed` sessions ("backups"). It replaces the ad segments with the
+  same-numbered live segments from those sessions and renumbers everything by
+  live sequence. The player sees one continuous live stream, including 1440p
+  HEVC.
+- **Backups get ads too**, at their own times. No backup is trusted: every
+  playlist contributes whatever live segments it has, and when none of them has
+  the newest live segment another backup session is opened (at most one every
+  3s, up to 6 per channel). A backup that fails, or stays in an ad for over a
+  minute, is closed; one unused for 5 minutes is too.
+- If every source was in an ad over the same stretch, those live segments don't
+  exist anywhere. They are skipped with an `#EXT-X-DISCONTINUITY`, and the
+  numbering carries on without them, so the player keeps its buffer instead of
+  starting over from one segment.
 - **Client ad markers** (`twitch-maf-ad`: the live video continues and Twitch's
   page is told to draw an ad). The marker is removed.
-- If no clean backup is available, ad segments are dropped and the player waits
+- If no backup comes through, ad segments are dropped and the player waits
   at the live edge. The ad is only shown when there is nothing live at all to
   serve (e.g. a pre-roll with no backup).
 
 | File | Role |
 | --- | --- |
 | `src/splice.js` | Pure splicing logic, tested against real playlists |
-| `src/blocker.js` | Fetches the backup session and rewrites media playlists |
+| `src/blocker.js` | Keeps each channel's backup sessions and rewrites media playlists |
 | `src/background.js` | Wires it into `webRequest.filterResponseData`; logging |
 | `src/session.js` | Per-tab session stats shown in the popup |
 | `src/playlist.js` | Playlist parsing and ad detection |

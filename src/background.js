@@ -103,6 +103,12 @@ const MAX_DUMPS_PER_RUN = 25;
 const SLOW_REWRITE_MS = 2_000;
 // The page's player waited this long for a playlist, so the stream froze.
 const STALLED_PLAYLIST_MS = 10_000;
+// The newest segment the page's player was given stayed the same this long while
+// it kept polling: playlists arrived, but there was nothing new to play. Segments
+// are ~2s, so this is about three missed.
+const EDGE_STALL_MS = 6_000;
+// Media playlist URL -> { newest, advancedAt, seenAt, stalled } for the page's streams.
+const liveEdges = new Map();
 // { reasons, timer } while a dump is waiting for the seconds after a problem.
 let pendingDump = null;
 let lastDumpAt = 0;
@@ -360,6 +366,7 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
 
   const analysis = analyzeMedia(text);
   if (isPageStream) Session.beat(tab.session, tab.lastMediaAt, analysis.adAtLiveEdge);
+  if (isPageStream) await watchLiveEdge(details, variant, analysis, outcome);
   const signature = playlistSignature(analysis);
   const previous = streams.get(details.url);
   remember(streams, details.url, { signature, isAd: analysis.isAd, ended: analysis.ended, text });
@@ -396,19 +403,24 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
         error: outcome.error ?? null,
         backupVariant: outcome.backupVariant ?? null,
         backupAuth: outcome.backupAuth ?? null,
+        backups: outcome.backups?.map((b) => ({ id: b.id, variant: b.variant, auth: b.auth, liveAtEdge: b.liveAtEdge, error: b.error })) ?? null,
+        pool: outcome.pool ?? null,
         rewriteMs: outcome.rewriteMs,
         chain: `output:${details.url}`,
         text: outcome.text,
       });
-      // The backup playlist this rewrite used, so any splice can be replayed exactly.
-      if (outcome.backupText) {
+      // The backup playlists this rewrite used, so any splice can be replayed exactly.
+      for (const backup of outcome.backups ?? []) {
+        if (!backup.text) continue;
         await record({
           kind: "backup",
           ...base,
-          backupVariant: outcome.backupVariant,
-          backupAuth: outcome.backupAuth,
-          chain: `backup:${outcome.backupUrl}`,
-          text: outcome.backupText,
+          backupId: backup.id,
+          backupVariant: backup.variant,
+          backupAuth: backup.auth,
+          liveAtEdge: backup.liveAtEdge,
+          chain: `backup:${backup.url}`,
+          text: backup.text,
         });
       }
     }
@@ -419,12 +431,44 @@ async function observeMedia(details, text, variant, outcome, waitedMs) {
       // The player got the ad, or nothing live to play.
       if (outcome.action === "fallback-native") anomaly("ad-not-blocked", detail);
       if (outcome.action === "strip-ad") anomaly("no-live-segments", detail);
+      // No source had these live segments, so the player skips them.
+      if (outcome.stats?.lost > 0) anomaly("segments-lost", { ...detail, lost: outcome.stats.lost, window: outcome.stats.window });
       if (outcome.rewriteMs > SLOW_REWRITE_MS) anomaly("slow-rewrite", detail);
     }
   }
   streams.get(details.url).action = outcome?.action ?? null;
 
   if (isPageStream) await updateAdState(tab, analysis, outcome);
+}
+
+// Flags a stream whose newest segment stops advancing while the player keeps
+// polling. Unlike a slow response, this freeze is invisible in request timings.
+// Works on the numbers the player was given, whatever caused the stall.
+async function watchLiveEdge(details, variant, analysis, outcome) {
+  const now = Date.now();
+  const newest = outcome?.stats?.outWindow?.[1] ?? (analysis.segments > 0 ? analysis.mediaSequence + analysis.segments - 1 : null);
+  if (newest === null || analysis.ended) return;
+  const prev = liveEdges.get(details.url);
+  // A gap between polls means the player was paused or the tab asleep, not stalled.
+  if (!prev || newest !== prev.newest || now - prev.seenAt > Session.idleMs) {
+    if (prev?.stalled && newest > prev.newest) {
+      await record({ kind: "event", event: "live-edge-resumed", tabId: details.tabId, channel: variant.channel, variant: variant.name, stalledMs: now - prev.advancedAt, from: prev.newest, to: newest });
+    }
+    remember(liveEdges, details.url, { newest, advancedAt: now, seenAt: now, stalled: false });
+    return;
+  }
+  prev.seenAt = now;
+  const stalledMs = now - prev.advancedAt;
+  if (prev.stalled || stalledMs <= EDGE_STALL_MS) return;
+  prev.stalled = true;
+  anomaly("live-edge-stalled", {
+    channel: variant.channel,
+    variant: variant.name,
+    stalledMs,
+    newest,
+    action: outcome?.action ?? null,
+    backups: outcome?.backups?.map((b) => ({ id: b.id, liveAtEdge: b.liveAtEdge, error: b.error })) ?? null,
+  });
 }
 
 // What the viewer got from this ad playlist. With no rewrite (Observe only, or an
