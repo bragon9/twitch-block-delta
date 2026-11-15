@@ -152,13 +152,23 @@ function resolveNativeLiveSeqs(native, memory) {
 // with a discontinuity; a longer hole means the player fell behind (paused, tab
 // asleep), so the output jumps ahead instead.
 const MAX_LOST_SEGMENTS = 30;
+// A hole only counts as lost if the player was given a playlist this recently;
+// after a longer pause it just fell behind.
+const LOSS_POLL_GAP_MS = 10_000;
+
+// What the player has been given in one playback session, across all of its
+// renditions: the player can switch quality at any time, so a hole in one
+// rendition's history may have been filled by another. `gaps` lists lost live
+// sequence ranges [first, last]; `newestOut` is the newest live sequence
+// delivered and `lastOutAt` when the last playlist was.
+function newSpliceSession() {
+  return { gaps: [], newestOut: null, lastOutAt: null };
+}
 
 // memory: per-stream state kept across calls, created by newSpliceMemory().
-// `gaps` lists lost live sequence ranges [first, last]. Pass the same array to
-// every rendition of a playback session so a quality switch lands on the same
-// numbers.
-function newSpliceMemory(gaps = []) {
-  return { nativeOffset: null, liveInit: null, newestOut: null, gaps };
+// Pass the same session to every rendition of a playback session.
+function newSpliceMemory(session = newSpliceSession()) {
+  return { nativeOffset: null, liveInit: null, session };
 }
 
 function lostBefore(gaps, seq) {
@@ -204,15 +214,16 @@ function liveAtEdge(parsed) {
 
 // `backupTexts`: playlists of the same rendition from other playback sessions
 // (null, one, or an array; entries may be null). None is assumed ad-free: each
-// contributes whatever live segments it has.
-function spliceMediaPlaylist(nativeText, backupTexts, memory) {
+// contributes whatever live segments it has. `now`: the time in ms, or null to
+// skip the check that the player has been polling.
+function spliceMediaPlaylist(nativeText, backupTexts, memory, now = null) {
   const texts = Array.isArray(backupTexts) ? backupTexts : [backupTexts];
   const native = parseMediaPlaylist(nativeText);
   const backups = texts.map((text) => (text ? parseMediaPlaylist(text, { assumeFreshSession: true }) : null));
   const usable = backups.filter(Boolean);
   const unresolved = resolveNativeLiveSeqs(native, memory);
-  memory.gaps ??= [];
-  const { gaps } = memory;
+  const { session } = memory;
+  const { gaps } = session;
 
   const lastNativeLive = native.segments.filter((s) => s.isLive && s.liveSeq !== null).at(-1);
   if (lastNativeLive) memory.liveInit = lastNativeLive.map;
@@ -253,18 +264,21 @@ function spliceMediaPlaylist(nativeText, backupTexts, memory) {
   // are trimmed from the front.
   const seqs = [...bySeq.keys()].sort((a, b) => a - b);
   let start = runStart(seqs, gaps);
-  const hole = memory.newestOut === null ? 0 : seqs[start] - memory.newestOut - 1;
-  if (hole > 0 && hole <= MAX_LOST_SEGMENTS) {
-    addGap(gaps, memory.newestOut + 1, seqs[start] - 1);
+  const polling = now === null || session.lastOutAt === null || now - session.lastOutAt <= LOSS_POLL_GAP_MS;
+  const hole = session.newestOut === null ? 0 : seqs[start] - session.newestOut - 1;
+  if (hole > 0 && hole <= MAX_LOST_SEGMENTS && polling) {
+    addGap(gaps, session.newestOut + 1, seqs[start] - 1);
     stats.lost = hole;
     start = runStart(seqs, gaps);
   }
   stats.gapTrimmed = start > 0;
   const window = seqs.slice(Math.max(start, seqs.length - MAX_WINDOW_SEGMENTS));
   stats.window = [window[0], window.at(-1)];
-  // The newest number the player has been given. It never moves back, even when
-  // a source briefly drops out and the window ends earlier than last time.
-  memory.newestOut = Math.max(memory.newestOut ?? -Infinity, window.at(-1));
+  // The newest number the player has been given, in any rendition. It never
+  // moves back, even when a source briefly drops out and the window ends
+  // earlier than last time.
+  session.newestOut = Math.max(session.newestOut ?? -Infinity, window.at(-1));
+  session.lastOutAt = now;
 
   // Output numbers skip lost numbers, so they stay contiguous across a loss.
   const outSeq = (seq) => seq - lostBefore(gaps, seq);
