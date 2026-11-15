@@ -2,8 +2,9 @@
 // Pure playlist splicing (depends on playlist.js). Every live segment is keyed by
 // its global live sequence number: the number, timing and even the bytes of a live
 // segment are identical in every playback session. So ad segments in the page's
-// playlist can be replaced with the same-numbered live segments from an ad-free
-// backup session, and the player sees one continuous live stream.
+// playlist can be replaced with the same-numbered live segments from other
+// playback sessions ("backups"), and the player sees one continuous live stream.
+// Backups get ads too, at their own times, so any number of them can be merged.
 //
 // Once a stream has been spliced, its output is always numbered by live sequence,
 // because Twitch's own numbering for that session is offset by the ad segments.
@@ -146,69 +147,159 @@ function resolveNativeLiveSeqs(native, memory) {
   return unresolved;
 }
 
+// Live segments that no source had before newer ones arrived, e.g. when every
+// source was in an ad at once, are lost for good. Up to this many are bridged
+// with a discontinuity; a longer hole means the player fell behind (paused, tab
+// asleep), so the output jumps ahead instead.
+const MAX_LOST_SEGMENTS = 30;
+
 // memory: per-stream state kept across calls, created by newSpliceMemory().
-function newSpliceMemory() {
-  return { nativeOffset: null, liveInit: null };
+// `gaps` lists lost live sequence ranges [first, last]. Pass the same array to
+// every rendition of a playback session so a quality switch lands on the same
+// numbers.
+function newSpliceMemory(gaps = []) {
+  return { nativeOffset: null, liveInit: null, newestOut: null, gaps };
 }
 
-function spliceMediaPlaylist(nativeText, backupText, memory) {
+function lostBefore(gaps, seq) {
+  let n = 0;
+  for (const [first, last] of gaps) if (first < seq) n += Math.min(last, seq - 1) - first + 1;
+  return n;
+}
+
+function isLost(gaps, seq) {
+  return gaps.some(([first, last]) => seq >= first && seq <= last);
+}
+
+// True when every number strictly between a and b is lost.
+function bridged(gaps, a, b) {
+  for (let seq = a + 1; seq < b; seq++) if (!isLost(gaps, seq)) return false;
+  return true;
+}
+
+function addGap(gaps, first, last) {
+  gaps.push([first, last]);
+  gaps.sort((a, b) => a[0] - b[0]);
+  for (let i = gaps.length - 1; i > 0; i--) {
+    if (gaps[i][0] <= gaps[i - 1][1] + 1) {
+      gaps[i - 1][1] = Math.max(gaps[i - 1][1], gaps[i][1]);
+      gaps.splice(i, 1);
+    }
+  }
+}
+
+// Start of the newest run of numbers with no hole, counting lost numbers as no hole.
+function runStart(seqs, gaps) {
+  let start = seqs.length - 1;
+  while (start > 0 && bridged(gaps, seqs[start - 1], seqs[start])) start--;
+  return start;
+}
+
+// Whether a playlist's newest segment is live with nothing (an ad marker, a
+// discontinuity) queued after it, i.e. it can supply the live edge right now.
+function liveAtEdge(parsed) {
+  const newest = parsed.segments.at(-1);
+  return Boolean(newest?.isLive && parsed.prefetchSafe && !parsed.ended);
+}
+
+// `backupTexts`: playlists of the same rendition from other playback sessions
+// (null, one, or an array; entries may be null). None is assumed ad-free: each
+// contributes whatever live segments it has.
+function spliceMediaPlaylist(nativeText, backupTexts, memory) {
+  const texts = Array.isArray(backupTexts) ? backupTexts : [backupTexts];
   const native = parseMediaPlaylist(nativeText);
-  const backup = backupText ? parseMediaPlaylist(backupText, { assumeFreshSession: true }) : null;
+  const backups = texts.map((text) => (text ? parseMediaPlaylist(text, { assumeFreshSession: true }) : null));
+  const usable = backups.filter(Boolean);
   const unresolved = resolveNativeLiveSeqs(native, memory);
+  memory.gaps ??= [];
+  const { gaps } = memory;
 
   const lastNativeLive = native.segments.filter((s) => s.isLive && s.liveSeq !== null).at(-1);
   if (lastNativeLive) memory.liveInit = lastNativeLive.map;
-  else if (!memory.liveInit) memory.liveInit = backup?.segments.find((s) => s.isLive)?.map ?? null;
+  else if (!memory.liveInit) memory.liveInit = usable.flatMap((b) => b.segments).find((s) => s.isLive)?.map ?? null;
 
-  // Native segments win; backup fills the numbers the ad took.
+  // Native segments win; backups fill the numbers the ad took, earlier backups first.
   const bySeq = new Map();
-  for (const seg of backup?.segments ?? []) {
-    if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: "backup" });
+  for (const backup of [...usable].reverse()) {
+    for (const seg of backup.segments) {
+      if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: backup });
+    }
   }
   for (const seg of native.segments) {
-    if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: "native" });
+    if (seg.isLive && seg.liveSeq !== null) bySeq.set(seg.liveSeq, { seg, source: native });
   }
+  // A number declared lost stays lost, even if a source turns up with it later,
+  // so the output's numbering never changes under the player.
+  for (const seq of [...bySeq.keys()]) if (isLost(gaps, seq)) bySeq.delete(seq);
 
   const stats = {
     adSegmentsDropped: native.segments.filter((s) => !s.isLive).length,
-    backupAdSegments: backup ? backup.segments.filter((s) => !s.isLive).length : null,
+    backupAdSegments: usable.length ? usable.reduce((n, b) => n + b.segments.filter((s) => !s.isLive).length, 0) : null,
+    backups: backups.map((b) => (b ? { adSegments: b.segments.filter((s) => !s.isLive).length, liveAtEdge: liveAtEdge(b) } : null)),
+    nativeLiveAtEdge: liveAtEdge(native),
     unresolvedNative: unresolved,
     fromNative: 0,
     fromBackup: 0,
     window: null,
+    outWindow: null,
     gapTrimmed: false,
+    lost: 0,
   };
   if (bySeq.size === 0) return { text: null, stats };
 
-  // The longest contiguous run ending at the newest segment, so the player never
-  // sees a hole. Anything older than a gap is dropped from the front.
+  // The newest run with no hole, so the player never waits on a segment that
+  // doesn't exist. A hole right after what the player already has means no
+  // source had those segments: they are declared lost and bridged. Older holes
+  // are trimmed from the front.
   const seqs = [...bySeq.keys()].sort((a, b) => a - b);
-  let start = seqs.length - 1;
-  while (start > 0 && seqs[start - 1] === seqs[start] - 1) start--;
+  let start = runStart(seqs, gaps);
+  const hole = memory.newestOut === null ? 0 : seqs[start] - memory.newestOut - 1;
+  if (hole > 0 && hole <= MAX_LOST_SEGMENTS) {
+    addGap(gaps, memory.newestOut + 1, seqs[start] - 1);
+    stats.lost = hole;
+    start = runStart(seqs, gaps);
+  }
   stats.gapTrimmed = start > 0;
   const window = seqs.slice(Math.max(start, seqs.length - MAX_WINDOW_SEGMENTS));
   stats.window = [window[0], window.at(-1)];
+  // The newest number the player has been given. It never moves back, even when
+  // a source briefly drops out and the window ends earlier than last time.
+  memory.newestOut = Math.max(memory.newestOut ?? -Infinity, window.at(-1));
+
+  // Output numbers skip lost numbers, so they stay contiguous across a loss.
+  const outSeq = (seq) => seq - lostBefore(gaps, seq);
+  stats.outWindow = [outSeq(window[0]), outSeq(window.at(-1))];
+  // A discontinuity sits before the first segment after each loss; the count of
+  // those that have scrolled out of the window is the discontinuity sequence.
+  const afterLoss = (seq) => gaps.some(([, last]) => last === seq - 1);
+  const discontinuitySequence = gaps.filter(([, last]) => last + 1 < window[0]).length;
 
   const out = ["#EXTM3U"];
-  out.push(...(native.header.length ? native.header : backup?.header ?? []));
-  const targetDuration = Math.max(native.targetDuration, backup?.targetDuration ?? 0, 1);
+  const header = native.header.length ? native.header : usable.find((b) => b.header.length)?.header ?? [];
+  out.push(...header);
+  const targetDuration = Math.max(native.targetDuration, ...usable.map((b) => b.targetDuration), 1);
   out.push(`#EXT-X-TARGETDURATION:${targetDuration}`);
-  out.push(`#EXT-X-MEDIA-SEQUENCE:${window[0]}`);
-  out.push(`#EXT-X-TWITCH-LIVE-SEQUENCE:${window[0]}`);
+  out.push(`#EXT-X-MEDIA-SEQUENCE:${outSeq(window[0])}`);
+  out.push(`#EXT-X-TWITCH-LIVE-SEQUENCE:${outSeq(window[0])}`);
+  if (discontinuitySequence > 0) out.push(`#EXT-X-DISCONTINUITY-SEQUENCE:${discontinuitySequence}`);
   out.push(...native.dateRanges.filter((line) => !isAdDateRange(line)));
 
   let currentMap = null;
   for (const seq of window) {
     const { seg, source } = bySeq.get(seq);
+    if (afterLoss(seq)) {
+      out.push("#EXT-X-DISCONTINUITY");
+      currentMap = null;
+    }
     // Backup init segments are byte-identical to the page's, so reuse the page's.
-    const map = source === "native" ? seg.map : memory.liveInit ?? seg.map;
+    const map = source === native ? seg.map : memory.liveInit ?? seg.map;
     if (map && map !== currentMap) {
       out.push(`#EXT-X-MAP:URI="${map}"`);
       currentMap = map;
     }
     if (seg.pdt) out.push(`#EXT-X-PROGRAM-DATE-TIME:${seg.pdt}`);
     out.push(`#EXTINF:${seg.extinf}`, seg.url);
-    if (source === "native") stats.fromNative++;
+    if (source === native) stats.fromNative++;
     else stats.fromBackup++;
   }
 
@@ -216,10 +307,10 @@ function spliceMediaPlaylist(nativeText, backupText, memory) {
   // are only valid if that playlist supplied our newest segment and nothing
   // (like the start of an ad) sits between that segment and the hints.
   const tail = bySeq.get(window.at(-1));
-  const tailSource = tail.source === "native" ? native : backup;
-  stats.prefetch = tailSource.segments.at(-1) === tail.seg && tailSource.prefetchSafe && !native.ended ? tail.source : "dropped";
-  if (stats.prefetch !== "dropped") {
-    for (const url of tailSource.prefetch) out.push(`#EXT-X-TWITCH-PREFETCH:${url}`);
+  const tailOk = tail.source.segments.at(-1) === tail.seg && tail.source.prefetchSafe && !native.ended;
+  stats.prefetch = !tailOk ? "dropped" : tail.source === native ? "native" : "backup";
+  if (tailOk) {
+    for (const url of tail.source.prefetch) out.push(`#EXT-X-TWITCH-PREFETCH:${url}`);
   }
   // Without it the player keeps polling a finished stream until the URL 404s.
   if (native.ended) out.push("#EXT-X-ENDLIST");
