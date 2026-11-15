@@ -156,7 +156,9 @@ function sessionTotals() {
 
 async function writeDump(reasons) {
   const entries = Ring.snapshot();
-  const since = entries.length > 0 ? Date.parse(entries[0].at) : Date.now();
+  // The whole window, not just from the first entry: quiet live playlists make
+  // no entries, but their timings are what show a stall.
+  const since = Date.now() - Ring.windowMs;
   const requests = [...requestLog, ...pendingRequests.values()].filter((r) => r.at >= since);
   const filename = `twitch-block-delta/problem-${fileStamp()}.json`;
   await saveJson(

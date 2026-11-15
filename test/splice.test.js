@@ -4,7 +4,7 @@ ObjC.import("Foundation");
 const root = $.NSProcessInfo.processInfo.environment.objectForKey("DELTA_ROOT").js;
 const read = (path) => $.NSString.stringWithContentsOfFileEncodingError(`${root}/${path}`, $.NSUTF8StringEncoding, null).js;
 const lib = (0, eval)(
-  `${read("src/playlist.js")}\n${read("src/splice.js")}\n;({ analyzeMedia, parseMediaPlaylist, spliceMediaPlaylist, newSpliceMemory, stripAdMarkers })`,
+  `${read("src/playlist.js")}\n${read("src/splice.js")}\n;({ analyzeMedia, parseMediaPlaylist, spliceMediaPlaylist, newSpliceMemory, newSpliceSession, stripAdMarkers })`,
 );
 
 const results = [];
@@ -113,6 +113,27 @@ test("a bare discontinuity before prefetch hints counts as an ad starting", () =
   eq(analysis.adReasons, ["discontinuity after the last segment"], "reasons");
 });
 
+test("a marker for an ad the page draws keeps the prefetch hints", () => {
+  // Real playlist: the twitch-maf-ad marker sits between the two hints, and the
+  // live video continues. Dropping the hints here made the player rebuffer.
+  const maf = read("test/fixtures/maf-client-ad-media.m3u8");
+  eq(lib.parseMediaPlaylist(maf).prefetchSafe, true, "prefetch safe");
+  const { text, stats } = lib.spliceMediaPlaylist(maf, null, lib.newSpliceMemory());
+  eq(stats.prefetch, "native", "kept");
+  eq(text.split("\n").filter((l) => l.startsWith("#EXT-X-TWITCH-PREFETCH")).length, 2, "both hints");
+  eq(text.includes("twitch-maf-ad"), false, "marker still removed");
+});
+
+test("a page-drawn ad marker that also signals ad video still drops the hints", () => {
+  const maf = read("test/fixtures/maf-client-ad-media.m3u8");
+  const stitched = maf.replace('CLASS="twitch-maf-ad"', 'CLASS="twitch-stitched-ad"');
+  eq(lib.parseMediaPlaylist(stitched).prefetchSafe, false, "stitched class");
+  const source = maf.replace('CLASS="twitch-maf-ad",', 'CLASS="twitch-maf-ad",X-TV-TWITCH-STREAM-SOURCE="Amazon",');
+  eq(lib.parseMediaPlaylist(source).prefetchSafe, false, "non-live source");
+  const discontinuity = maf.replace("#EXT-X-DATERANGE:ID=\"maf-ad", "#EXT-X-DISCONTINUITY\n#EXT-X-DATERANGE:ID=\"maf-ad");
+  eq(lib.parseMediaPlaylist(discontinuity).prefetchSafe, false, "discontinuity");
+});
+
 test("prefetch hints on a clean live playlist are kept", () => {
   const post = lib.parseMediaPlaylist(fixture("post-ad-native"));
   eq(post.prefetchSafe, true, "post-ad live tail is safe");
@@ -205,7 +226,7 @@ test("segments no source had are bridged with a discontinuity, keeping the numbe
   // Every source is in an ad over 100-102; the backup comes back at 103.
   const { text, stats } = lib.spliceMediaPlaylist(allAdNative, playlist(94, [...range(94, 99), ...ads(3), 103]), memory);
   eq(stats.lost, 3, "lost");
-  eq(memory.gaps, [[100, 102]], "gap remembered");
+  eq(memory.session.gaps, [[100, 102]], "gap remembered");
   eq(stats.window, [94, 103], "live window");
   eq(stats.outWindow, [94, 100], "output numbers stay contiguous");
   const parsed = lib.parseMediaPlaylist(text);
@@ -229,12 +250,12 @@ test("segments no source had are bridged with a discontinuity, keeping the numbe
 });
 
 test("lost numbers stay lost, and every rendition of the session shares them", () => {
-  const gaps = [];
-  const memory = lib.newSpliceMemory(gaps);
+  const session = lib.newSpliceSession();
+  const memory = lib.newSpliceMemory(session);
   lib.spliceMediaPlaylist(allAdNative, playlist(90, range(90, 99)), memory);
   lib.spliceMediaPlaylist(allAdNative, playlist(94, [...range(94, 99), ...ads(3), 103]), memory);
   // Another rendition, whose backup happens to have 100-102.
-  const other = lib.spliceMediaPlaylist(allAdNative, playlist(96, range(96, 105)), lib.newSpliceMemory(gaps));
+  const other = lib.spliceMediaPlaylist(allAdNative, playlist(96, range(96, 105)), lib.newSpliceMemory(session));
   eq(segmentUrls(other.text).some((u) => /live-10[012]\.mp4/.test(u)), false, "lost numbers not used");
   eq(other.stats.outWindow, [96, 102], "same numbering as the first rendition");
   // And the first rendition ignores them if a source turns up with them later.
@@ -250,7 +271,7 @@ test("an edge that briefly moves back is not mistaken for a loss", () => {
   lib.spliceMediaPlaylist(allAdNative, playlist(88, range(88, 97)), memory);
   const { stats } = lib.spliceMediaPlaylist(allAdNative, playlist(92, range(92, 101)), memory);
   eq(stats.lost, 0, "nothing lost");
-  eq(memory.gaps, [], "no gap");
+  eq(memory.session.gaps, [], "no gap");
   eq(stats.window, [92, 101], "window");
 });
 
@@ -260,8 +281,35 @@ test("a hole longer than an ad (player paused, tab asleep) jumps ahead instead",
   const { text, stats } = lib.spliceMediaPlaylist(allAdNative, playlist(300, range(300, 309)), memory);
   assertCleanContinuous(text);
   eq(stats.lost, 0, "not counted as lost");
-  eq(memory.gaps, [], "no gap");
+  eq(memory.session.gaps, [], "no gap");
   eq(stats.outWindow, [300, 309], "live numbering");
+});
+
+test("switching quality and back is not mistaken for a loss", () => {
+  // Real case: the player left 1440p60 for 360p30 during an ad Twitch drew
+  // itself, and came back ~45s later. Only 360p30 had been polled meanwhile.
+  const session = lib.newSpliceSession();
+  const high = lib.newSpliceMemory(session);
+  const low = lib.newSpliceMemory(session);
+  const live = (first, last) => playlist(first, range(first, last));
+  lib.spliceMediaPlaylist(live(4431, 4445), null, high, 0);
+  for (let i = 1; i <= 23; i++) lib.spliceMediaPlaylist(live(4431 + i, 4445 + i), null, low, i * 2000);
+  const back = lib.spliceMediaPlaylist(live(4454, 4468), null, high, 48_000);
+  eq(back.stats.lost, 0, "nothing lost");
+  eq(session.gaps, [], "no gap");
+  eq(back.stats.outWindow, [4454, 4468], "same numbers the low rendition used");
+});
+
+test("a hole after the player stopped polling is not a loss", () => {
+  const memory = lib.newSpliceMemory();
+  lib.spliceMediaPlaylist(allAdNative, playlist(90, range(90, 99)), memory, 0);
+  const { stats } = lib.spliceMediaPlaylist(allAdNative, playlist(104, range(104, 113)), memory, 30_000);
+  eq(stats.lost, 0, "not lost");
+  eq(memory.session.gaps, [], "no gap");
+  // While polling, the same hole is a loss.
+  const polling = lib.newSpliceMemory();
+  lib.spliceMediaPlaylist(allAdNative, playlist(90, range(90, 99)), polling, 0);
+  eq(lib.spliceMediaPlaylist(allAdNative, playlist(104, range(104, 113)), polling, 2_000).stats.lost, 4, "lost");
 });
 
 results.join("\n");

@@ -25,9 +25,9 @@ let nextBackupId = 1;
 // Media playlist URL -> splice memory.
 const splicedStreams = new Map();
 // Playback sessions (one per master playlist) that have had a stitched ad, ->
-// the live sequence ranges lost in that session. From then on every rendition
-// of the session is numbered by live sequence, minus what was lost, so a
-// quality switch after a blocked ad lands on consistent numbers.
+// what their player has been given (see newSpliceSession). From then on every
+// rendition of the session is numbered by live sequence, minus what was lost,
+// so a quality switch after a blocked ad lands on consistent numbers.
 const splicedSessions = new Map();
 
 function withTimeout(promise, ms, label) {
@@ -168,9 +168,9 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
     if (analysis.adKind === "client") return { text: stripAdMarkers(nativeText).text, action: "strip-markers", analysis };
     return { text: nativeText, action: "pass", analysis };
   }
-  if (variant) remember(splicedSessions, variant.session, splicedSessions.get(variant.session) ?? []);
+  if (variant) remember(splicedSessions, variant.session, splicedSessions.get(variant.session) ?? newSpliceSession());
   if (!memory) {
-    memory = newSpliceMemory(variant ? splicedSessions.get(variant.session) : []);
+    memory = newSpliceMemory(variant ? splicedSessions.get(variant.session) : newSpliceSession());
     remember(splicedStreams, url, memory);
   }
 
@@ -182,7 +182,7 @@ async function rewriteMediaPlaylist(url, nativeText, variant, usherParams) {
     else error = "rendition unknown (its master playlist was not seen)";
   }
 
-  const { text, stats } = spliceMediaPlaylist(nativeText, results.map((r) => r.text), memory);
+  const { text, stats } = spliceMediaPlaylist(nativeText, results.map((r) => r.text), memory, Date.now());
   if (variant && results.length) tendPool(variant, usherParams, results, stats, poolEvents);
   const fetched = results.filter((r) => r.text);
   // Only an error when no backup came through; one failing among several is routine.
