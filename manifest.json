@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Twitch Block Delta",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Firefox-only Twitch ad blocker that splices ad-free live segments into the stream.",
   "icons": {
     "48": "icons/icon.svg",
