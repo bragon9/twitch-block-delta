@@ -28,6 +28,23 @@ function isAdDateRange(line) {
   return Object.keys(attrs).some((key) => AD_ATTRIBUTE_RE.test(key));
 }
 
+// A marker for an ad Twitch's page draws itself (twitch-maf-ad): the live video
+// carries on underneath, so nothing in the stream changes. Anything that also
+// signals ad video in the stream (a stitched class or id, a non-live stream
+// source, stitched-ad attributes) doesn't count.
+function isClientAdMarker(line) {
+  const attrs = parseAttributes(splitTag(line)[1]);
+  const keys = Object.keys(attrs);
+  const client = /maf/i.test(attrs.CLASS || "") || keys.some((key) => /^X-TTV-MAF-AD/.test(key));
+  const source = attrs["X-TV-TWITCH-STREAM-SOURCE"];
+  const stitched =
+    /stitched/i.test(attrs.CLASS || "") ||
+    /stitched/i.test(attrs.ID || "") ||
+    (source && source !== LIVE_SEGMENT_TITLE) ||
+    keys.some((key) => /^X-TV-TWITCH-AD/.test(key));
+  return client && !stitched;
+}
+
 // Removes ad markers but leaves everything else byte-for-byte. Used on streams
 // with no stitched ad, so client-rendered ads (twitch-maf-ad) never trigger.
 function stripAdMarkers(text) {
@@ -53,7 +70,9 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
   let ended = false;
   // Anything between the last segment and the prefetch hints (a discontinuity,
   // a new init segment, an ad marker) means the hints point at what comes next,
-  // which at an ad boundary is the ad itself.
+  // which at an ad boundary is the ad itself. A marker for an ad the page draws
+  // is the exception: the hints still point at live video, and dropping them
+  // starves the low-latency player into rebuffering.
   let changedAfterLastSegment = false;
 
   for (const raw of text.split("\n")) {
@@ -121,7 +140,7 @@ function parseMediaPlaylist(text, { assumeFreshSession = false } = {}) {
         break;
       case "#EXT-X-DATERANGE":
         dateRanges.push(line);
-        if (isAdDateRange(line)) changedAfterLastSegment = true;
+        if (isAdDateRange(line) && !isClientAdMarker(line)) changedAfterLastSegment = true;
         break;
       default:
         if (!seenSegment && !REGENERATED_HEADER_TAGS.has(tag)) header.push(line);

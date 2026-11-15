@@ -113,6 +113,27 @@ test("a bare discontinuity before prefetch hints counts as an ad starting", () =
   eq(analysis.adReasons, ["discontinuity after the last segment"], "reasons");
 });
 
+test("a marker for an ad the page draws keeps the prefetch hints", () => {
+  // Real playlist: the twitch-maf-ad marker sits between the two hints, and the
+  // live video continues. Dropping the hints here made the player rebuffer.
+  const maf = read("test/fixtures/maf-client-ad-media.m3u8");
+  eq(lib.parseMediaPlaylist(maf).prefetchSafe, true, "prefetch safe");
+  const { text, stats } = lib.spliceMediaPlaylist(maf, null, lib.newSpliceMemory());
+  eq(stats.prefetch, "native", "kept");
+  eq(text.split("\n").filter((l) => l.startsWith("#EXT-X-TWITCH-PREFETCH")).length, 2, "both hints");
+  eq(text.includes("twitch-maf-ad"), false, "marker still removed");
+});
+
+test("a page-drawn ad marker that also signals ad video still drops the hints", () => {
+  const maf = read("test/fixtures/maf-client-ad-media.m3u8");
+  const stitched = maf.replace('CLASS="twitch-maf-ad"', 'CLASS="twitch-stitched-ad"');
+  eq(lib.parseMediaPlaylist(stitched).prefetchSafe, false, "stitched class");
+  const source = maf.replace('CLASS="twitch-maf-ad",', 'CLASS="twitch-maf-ad",X-TV-TWITCH-STREAM-SOURCE="Amazon",');
+  eq(lib.parseMediaPlaylist(source).prefetchSafe, false, "non-live source");
+  const discontinuity = maf.replace("#EXT-X-DATERANGE:ID=\"maf-ad", "#EXT-X-DISCONTINUITY\n#EXT-X-DATERANGE:ID=\"maf-ad");
+  eq(lib.parseMediaPlaylist(discontinuity).prefetchSafe, false, "discontinuity");
+});
+
 test("prefetch hints on a clean live playlist are kept", () => {
   const post = lib.parseMediaPlaylist(fixture("post-ad-native"));
   eq(post.prefetchSafe, true, "post-ad live tail is safe");
